@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite3
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files - do not commit)
+data/raw/*
+data/processed/*
+data/backtests/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/backtests/.gitkeep
+
+# Node (frontend)
+node_modules/
+.next/
+out/
+
+# Logs
+*.log
+logs/
+
+# Secrets
+*.pem
+*.key
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Ruff
+.ruff_cache/

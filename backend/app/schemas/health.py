@@ -36,7 +36,9 @@ class HealthResponse(BaseModel):
     version: str
     trading_mode: str
     components: dict[str, ComponentHealth]
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=datetime.now().astimezone().tzinfo))
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(tz=datetime.now().astimezone().tzinfo)
+    )
 
 
 class SystemStatusResponse(BaseModel):
@@ -48,4 +50,6 @@ class SystemStatusResponse(BaseModel):
     debug: bool
     uptime_seconds: float
     configuration_valid: bool
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=datetime.now().astimezone().tzinfo))
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(tz=datetime.now().astimezone().tzinfo)
+    )

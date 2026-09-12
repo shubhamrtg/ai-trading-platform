@@ -4,19 +4,18 @@ All SQLAlchemy models must be imported here so that Alembic
 can discover them for auto-generating migrations.
 """
 
+from app.models.audit import AuditEventModel
 from app.models.base import Base
-
+from app.models.portfolio import PortfolioSnapshotModel, PositionModel
 from app.models.strategy import StrategyModel, StrategyVersionModel
 from app.models.trading import (
-    SignalModel,
     AIAssessmentModel,
-    RiskDecisionModel,
+    FillModel,
     OrderIntentModel,
     OrderModel,
-    FillModel,
+    RiskDecisionModel,
+    SignalModel,
 )
-from app.models.portfolio import PositionModel, PortfolioSnapshotModel
-from app.models.audit import AuditEventModel
 
 __all__ = [
     "Base",

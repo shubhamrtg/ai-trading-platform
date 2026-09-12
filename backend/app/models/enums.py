@@ -1,8 +1,10 @@
 from enum import Enum
 
+
 class OrderSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
+
 
 class OrderType(str, Enum):
     MARKET = "MARKET"
@@ -10,11 +12,13 @@ class OrderType(str, Enum):
     STOP_MARKET = "STOP_MARKET"
     STOP_LIMIT = "STOP_LIMIT"
 
+
 class TimeInForce(str, Enum):
     GTC = "GTC"  # Good Till Cancelled
     IOC = "IOC"  # Immediate Or Cancel
     FOK = "FOK"  # Fill Or Kill
     DAY = "DAY"  # Day Order
+
 
 class OrderState(str, Enum):
     CREATED = "CREATED"
@@ -29,6 +33,7 @@ class OrderState(str, Enum):
     EXPIRED = "EXPIRED"
     FAILED = "FAILED"
 
+
 class PositionState(str, Enum):
     OPENING = "OPENING"
     OPEN = "OPEN"
@@ -36,17 +41,19 @@ class PositionState(str, Enum):
     CLOSING = "CLOSING"
     CLOSED = "CLOSED"
 
+
 class SignalType(str, Enum):
     ENTRY = "ENTRY"
     EXIT = "EXIT"
+
 
 class RiskDecisionStatus(str, Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     MODIFIED = "MODIFIED"
 
+
 class AIRecommendation(str, Enum):
     ALLOW = "ALLOW"
     REJECT = "REJECT"
     HOLD = "HOLD"
-

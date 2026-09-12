@@ -7,7 +7,6 @@ unsafe state.
 """
 
 from enum import Enum
-from typing import Optional
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -71,7 +70,7 @@ class Settings(BaseSettings):
     database_echo: bool = False
 
     # --- Redis ---
-    redis_url: Optional[str] = "redis://localhost:6379/0"
+    redis_url: str | None = "redis://localhost:6379/0"
 
     # --- Logging ---
     log_level: str = "INFO"
@@ -107,15 +106,11 @@ class Settings(BaseSettings):
             errors: list[str] = []
 
             if not self.live_trading_enabled:
-                errors.append(
-                    "LIVE_TRADING_ENABLED must be set to 'true'"
-                )
+                errors.append("LIVE_TRADING_ENABLED must be set to 'true'")
 
             expected_confirmation = "I_UNDERSTAND_REAL_MONEY_IS_AT_RISK"
             if self.live_trading_confirmation != expected_confirmation:
-                errors.append(
-                    f"LIVE_TRADING_CONFIRMATION must be set to '{expected_confirmation}'"
-                )
+                errors.append(f"LIVE_TRADING_CONFIRMATION must be set to '{expected_confirmation}'")
 
             if errors:
                 raise ValueError(

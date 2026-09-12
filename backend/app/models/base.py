@@ -4,7 +4,7 @@ All database models should inherit from Base to get consistent
 primary key, timestamp, and metadata behavior.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column

@@ -1,9 +1,6 @@
 """Tests for configuration management and trading mode safety gates."""
 
-import os
-
 import pytest
-
 from app.config.settings import Settings, TradingMode
 
 

@@ -25,6 +25,7 @@ os.environ["LOG_LEVEL"] = "DEBUG"
 def _clear_settings_cache():
     """Clear the cached settings before each test so env overrides take effect."""
     from app.config import get_settings
+
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

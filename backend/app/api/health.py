@@ -5,12 +5,12 @@ for database and Redis connectivity. Always reports the current
 trading mode prominently.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
-from app.database import check_database_health
 from app.config import get_settings
+from app.database import check_database_health
 from app.schemas.health import (
     ComponentHealth,
     ComponentStatus,
@@ -66,7 +66,7 @@ async def health_check() -> HealthResponse:
         version=settings.app_version,
         trading_mode=settings.trading_mode.value,
         components=components,
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
     )
 
 

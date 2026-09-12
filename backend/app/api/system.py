@@ -5,7 +5,7 @@ uptime, version, and configuration validity.
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
@@ -47,5 +47,5 @@ async def system_status() -> SystemStatusResponse:
         debug=settings.debug,
         uptime_seconds=round(uptime, 2),
         configuration_valid=True,
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
     )

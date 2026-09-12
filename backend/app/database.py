@@ -6,7 +6,6 @@ check function for monitoring.
 """
 
 from collections.abc import AsyncGenerator
-from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -21,8 +20,8 @@ from app.logging import get_logger
 logger = get_logger(__name__)
 
 # Module-level engine and session factory (initialized in setup_database)
-_engine: Optional[AsyncEngine] = None
-_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def setup_database(

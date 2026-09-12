@@ -95,8 +95,7 @@ def create_app() -> FastAPI:
         title=title,
         version=__version__,
         description=(
-            "AI-powered automated trading platform. "
-            f"Currently operating in **{mode_label}** mode."
+            f"AI-powered automated trading platform. Currently operating in **{mode_label}** mode."
         ),
         lifespan=lifespan,
         docs_url="/docs",

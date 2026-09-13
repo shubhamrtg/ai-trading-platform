@@ -51,6 +51,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+# UP042: We intentionally use (str, Enum) instead of StrEnum for SQLAlchemy
+# string column compatibility. Values are persisted as plain strings.
+ignore = ["UP042"]
 
 [tool.mypy]
 python_version = "3.12"

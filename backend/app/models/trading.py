@@ -1,3 +1,17 @@
+"""Trading pipeline persistence models.
+
+Models follow the canonical trading pipeline:
+  Signal → AIAssessment → RiskDecision → OrderIntent → Order → Fill
+
+Design decisions:
+- All financial values use Numeric(24, 8) for exact decimal precision.
+- All timestamps use DateTime(timezone=True) for UTC consistency.
+- Enum fields are stored as String columns (not PostgreSQL native enums).
+- correlation_id links all objects in a single trading decision chain.
+- Foreign keys enforce the mandatory pipeline relationships.
+- Order is self-contained (denormalized from OrderIntent) for operational queries.
+"""
+
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -19,11 +33,13 @@ from app.models.enums import (
 
 
 class SignalModel(Base):
-    """Database representation of a canonical strategy signal."""
+    """A strategy-generated trading signal. A proposal, NOT an executable order."""
 
     __tablename__ = "signals"
 
     signal_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True, default=uuid.uuid4)
+
     strategy_id: Mapped[str] = mapped_column(String, index=True)
     strategy_version: Mapped[str] = mapped_column(String)
 
@@ -44,11 +60,12 @@ class SignalModel(Base):
 
 
 class AIAssessmentModel(Base):
-    """Database representation of AI advisory output."""
+    """AI advisory output. Advisory only — never authoritative for execution."""
 
     __tablename__ = "ai_assessments"
 
     assessment_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True)
     signal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("signals.signal_id"), index=True)
 
     provider: Mapped[str] = mapped_column(String)
@@ -63,11 +80,12 @@ class AIAssessmentModel(Base):
 
 
 class RiskDecisionModel(Base):
-    """Database representation of the Risk Engine's final authority."""
+    """The Risk Engine's final authority over a trading decision."""
 
     __tablename__ = "risk_decisions"
 
     decision_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True)
     signal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("signals.signal_id"), index=True)
 
     status: Mapped[RiskDecisionStatus] = mapped_column(String)
@@ -83,11 +101,16 @@ class RiskDecisionModel(Base):
 
 
 class OrderIntentModel(Base):
-    """Database representation of an approved Order Intent."""
+    """Risk-approved request for the execution engine.
+
+    Cannot exist without a valid RiskDecision (enforced by FK).
+    The idempotency_key prevents duplicate execution at the DB level.
+    """
 
     __tablename__ = "order_intents"
 
     intent_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True)
     originating_signal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("signals.signal_id"))
     risk_decision_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("risk_decisions.decision_id"))
 
@@ -109,26 +132,42 @@ class OrderIntentModel(Base):
 
 
 class OrderModel(Base):
-    """State machine of the actual order."""
+    """Actual order tracked by the execution engine / broker.
+
+    Self-contained for operational queries — key fields are denormalized
+    from OrderIntent so that order queries don't require JOINs.
+    """
 
     __tablename__ = "orders"
 
     order_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True)
     intent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("order_intents.intent_id"), unique=True)
     broker_order_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
 
-    state: Mapped[OrderState] = mapped_column(String)
+    # Denormalized from OrderIntent for self-contained operational queries
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    side: Mapped[OrderSide] = mapped_column(String)
+    order_type: Mapped[OrderType] = mapped_column(String)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8))
+
+    state: Mapped[OrderState] = mapped_column(String, index=True)
 
     filled_quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), default=Decimal("0.0"))
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class FillModel(Base):
-    """Database representation of an execution fill."""
+    """A single execution fill against an order.
+
+    One Order can have multiple Fills (partial fills).
+    """
 
     __tablename__ = "fills"
 
     fill_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(index=True)
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.order_id"), index=True)
     broker_fill_id: Mapped[str | None] = mapped_column(String, nullable=True)
 

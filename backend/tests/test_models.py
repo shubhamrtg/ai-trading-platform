@@ -127,6 +127,46 @@ async def test_strategy_version_uniqueness(db_session: AsyncSession) -> None:
         await db_session.commit()
 
 
+@pytest.mark.asyncio
+async def test_strategy_version_immutability_draft(db_session: AsyncSession) -> None:
+    """DRAFT strategy versions can be modified."""
+    strategy = StrategyModel(strategy_id="s_draft", name="Draft Strat")
+    db_session.add(strategy)
+
+    v = StrategyVersionModel(strategy_id="s_draft", version="1.0", status=StrategyStatus.DRAFT)
+    db_session.add(v)
+    await db_session.commit()
+
+    # Modify protected fields
+    v.source_hash = "abc"
+    v.supported_asset_classes = ["CRYPTO"]
+    await db_session.commit()  # Should succeed
+    assert v.source_hash == "abc"
+
+
+@pytest.mark.asyncio
+async def test_strategy_version_immutability_active(db_session: AsyncSession) -> None:
+    """ACTIVE strategy versions reject modification of immutable fields."""
+    strategy = StrategyModel(strategy_id="s_active", name="Active Strat")
+    db_session.add(strategy)
+
+    v = StrategyVersionModel(strategy_id="s_active", version="1.0", status=StrategyStatus.ACTIVE)
+    db_session.add(v)
+    await db_session.commit()
+
+    # Try modifying an immutable field
+    v.source_hash = "tampered_hash"
+    with pytest.raises(ValueError, match="Cannot modify immutable field 'source_hash'"):
+        await db_session.commit()
+
+    await db_session.rollback()
+
+    # Status change should still be allowed
+    v.status = StrategyStatus.DEPRECATED
+    await db_session.commit()  # Should succeed
+    assert v.status == StrategyStatus.DEPRECATED
+
+
 # ============================================================
 # Signal + FK Tests
 # ============================================================
@@ -336,6 +376,144 @@ async def test_multiple_fills_per_order(db_session: AsyncSession) -> None:
     assert len(fills) == 2
     total_filled = sum(f.quantity for f in fills)
     assert total_filled == Decimal("0.6")
+
+
+@pytest.mark.asyncio
+async def test_order_state_transitions_valid(db_session: AsyncSession) -> None:
+    """Test valid order state transitions through the SQLAlchemy event listener."""
+    sig_id = uuid.uuid4()
+    corr_id = uuid.uuid4()
+    signal = _make_signal(sig_id=sig_id, corr_id=corr_id)
+    db_session.add(signal)
+    await db_session.commit()
+
+    dec_id = uuid.uuid4()
+    decision = RiskDecisionModel(
+        decision_id=dec_id,
+        correlation_id=corr_id,
+        signal_id=sig_id,
+        status=RiskDecisionStatus.APPROVED.value,
+        timestamp=datetime.now(UTC),
+    )
+    db_session.add(decision)
+    await db_session.commit()
+
+    intent_id = uuid.uuid4()
+    intent = OrderIntentModel(
+        intent_id=intent_id,
+        correlation_id=corr_id,
+        originating_signal_id=sig_id,
+        risk_decision_id=dec_id,
+        account_id="acc1",
+        symbol="BTC-USD",
+        side=OrderSide.BUY.value,
+        order_type=OrderType.MARKET.value,
+        quantity=Decimal("1.0"),
+        time_in_force=TimeInForce.GTC.value,
+        idempotency_key=f"key-{uuid.uuid4()}",
+        creation_timestamp=datetime.now(UTC),
+    )
+    db_session.add(intent)
+    await db_session.commit()
+
+    order = OrderModel(
+        order_id=uuid.uuid4(),
+        correlation_id=corr_id,
+        intent_id=intent_id,
+        symbol="BTC-USD",
+        side=OrderSide.BUY.value,
+        order_type=OrderType.MARKET.value,
+        quantity=Decimal("1.0"),
+        state=OrderState.CREATED.value,
+    )
+    db_session.add(order)
+    await db_session.commit()
+
+    # Valid transitions
+    valid_path = [
+        OrderState.VALIDATED.value,
+        OrderState.SUBMITTED.value,
+        OrderState.ACKNOWLEDGED.value,
+        OrderState.PARTIALLY_FILLED.value,
+        OrderState.FILLED.value,
+    ]
+
+    for state in valid_path:
+        order.state = state
+        await db_session.commit()  # Should succeed
+        assert order.state == state
+
+
+@pytest.mark.asyncio
+async def test_order_state_transitions_invalid(db_session: AsyncSession) -> None:
+    """Test that invalid order state transitions are rejected."""
+    sig_id = uuid.uuid4()
+    corr_id = uuid.uuid4()
+    signal = _make_signal(sig_id=sig_id, corr_id=corr_id)
+    db_session.add(signal)
+    await db_session.commit()
+
+    dec_id = uuid.uuid4()
+    decision = RiskDecisionModel(
+        decision_id=dec_id,
+        correlation_id=corr_id,
+        signal_id=sig_id,
+        status=RiskDecisionStatus.APPROVED.value,
+        timestamp=datetime.now(UTC),
+    )
+    db_session.add(decision)
+    await db_session.commit()
+
+    intent_id = uuid.uuid4()
+    intent = OrderIntentModel(
+        intent_id=intent_id,
+        correlation_id=corr_id,
+        originating_signal_id=sig_id,
+        risk_decision_id=dec_id,
+        account_id="acc1",
+        symbol="BTC-USD",
+        side=OrderSide.BUY.value,
+        order_type=OrderType.MARKET.value,
+        quantity=Decimal("1.0"),
+        time_in_force=TimeInForce.GTC.value,
+        idempotency_key=f"key-{uuid.uuid4()}",
+        creation_timestamp=datetime.now(UTC),
+    )
+    db_session.add(intent)
+    await db_session.commit()
+
+    order_uuid = uuid.uuid4()
+    order = OrderModel(
+        order_id=order_uuid,
+        correlation_id=corr_id,
+        intent_id=intent_id,
+        symbol="BTC-USD",
+        side=OrderSide.BUY.value,
+        order_type=OrderType.MARKET.value,
+        quantity=Decimal("1.0"),
+        state=OrderState.CREATED.value,
+    )
+    db_session.add(order)
+    await db_session.commit()
+
+    # Invalid transition (CREATED -> FILLED)
+    order.state = OrderState.FILLED.value
+    with pytest.raises(ValueError, match="Invalid transition from CREATED to FILLED"):
+        await db_session.commit()
+
+    await db_session.rollback()
+
+    # Reload the order after rollback using the known UUID
+    result = await db_session.execute(select(OrderModel).where(OrderModel.order_id == order_uuid))
+    order = result.scalar_one()
+
+    # Try terminal state rule (Terminal -> anything is blocked)
+    order.state = OrderState.CANCELLED.value
+    await db_session.commit()  # CREATED -> CANCELLED is allowed
+
+    order.state = OrderState.FILLED.value
+    with pytest.raises(ValueError, match="is a terminal state"):
+        await db_session.commit()
 
 
 # ============================================================

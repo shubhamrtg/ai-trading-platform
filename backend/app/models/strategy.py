@@ -13,7 +13,7 @@ Design decisions:
 
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -69,3 +69,55 @@ class StrategyVersionModel(Base):
     parameters_schema: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     strategy: Mapped["StrategyModel"] = relationship(back_populates="versions")
+
+
+@event.listens_for(StrategyVersionModel, "before_update")
+def enforce_strategy_version_immutability(
+    mapper: Any, connection: Any, target: StrategyVersionModel
+) -> None:
+    """Enforce that strategy definitions are immutable once they leave DRAFT status.
+
+    A strategy version represents a specific executable definition. Modifying it after
+    it has been activated would break the reproducibility of historical backtests and
+    trade logic.
+    """
+    # Get the state of the object before this update
+    state = inspect(target)
+
+    # If it's a new object (not yet in DB), nothing to check here (handled by insert)
+    if not state.has_identity:
+        return
+
+    # We must look at the ORIGINAL status in the database to determine if it was protected.
+    # If the user is currently changing it from DRAFT -> ACTIVE, they are allowed to
+    # update fields one last time during that transition.
+    status_history = state.attrs.status.history
+    original_status = target.status
+    if status_history.has_changes():
+        if status_history.deleted:
+            original_status = status_history.deleted[0]
+        else:
+            original_status = state.committed_state.get("status", target.status)
+
+    if original_status == StrategyStatus.DRAFT:
+        # DRAFT versions can be modified freely.
+        return
+
+    # Once a strategy leaves DRAFT, the following fields become immutable
+    immutable_fields = [
+        "strategy_id",
+        "version",
+        "source_hash",
+        "supported_asset_classes",
+        "supported_timeframes",
+        "required_indicators",
+        "parameters_schema",
+    ]
+
+    for field in immutable_fields:
+        history = getattr(state.attrs, field).history
+        if history.has_changes():
+            raise ValueError(
+                f"Cannot modify immutable field '{field}' on a StrategyVersion "
+                f"that is in {original_status} status."
+            )

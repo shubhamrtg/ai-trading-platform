@@ -17,9 +17,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, event, inspect
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.domain.transitions import validate_order_transition
 from app.models.base import Base
 from app.models.enums import (
     AIRecommendation,
@@ -178,3 +179,28 @@ class FillModel(Base):
     fee: Mapped[Decimal] = mapped_column(Numeric(24, 8), default=Decimal("0.0"))
     fee_asset: Mapped[str | None] = mapped_column(String, nullable=True)
     slippage: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+
+
+@event.listens_for(OrderModel, "before_update")
+def enforce_order_state_transitions(mapper: Any, connection: Any, target: OrderModel) -> None:
+    """Enforce that Order state transitions follow the authoritative state machine."""
+    state = inspect(target)
+    if not state.has_identity:
+        return
+
+    status_history = state.attrs.state.history
+    if status_history.has_changes():
+        if status_history.deleted:
+            original_status_str = status_history.deleted[0]
+        else:
+            original_status_str = state.committed_state.get("state")
+            if not original_status_str:
+                return  # Unloaded and unknown original state
+
+        new_status_str = target.state
+
+        # Convert strings back to enums for validation
+        original_status = OrderState(original_status_str)
+        new_status = OrderState(new_status_str)
+
+        validate_order_transition(original_status, new_status)

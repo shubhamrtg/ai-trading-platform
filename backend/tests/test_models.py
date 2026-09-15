@@ -172,8 +172,7 @@ async def test_strategy_version_immutability_active(db_session: AsyncSession) ->
     await db_session.rollback()  # Should succeed
     result = await db_session.execute(
         select(StrategyVersionModel).where(
-            StrategyVersionModel.strategy_id == "s_active",
-            StrategyVersionModel.version == "1.0"
+            StrategyVersionModel.strategy_id == "s_active", StrategyVersionModel.version == "1.0"
         )
     )
     v = result.scalar_one()

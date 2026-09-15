@@ -87,10 +87,26 @@ def upgrade() -> None:
 
     # Backfill missing order fields independently by joining with order_intents.
     # This safely replicates the denormalized data without inventing anything.
-    bind.execute(sa.text("UPDATE orders SET symbol = (SELECT symbol FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE symbol IS NULL"))
-    bind.execute(sa.text("UPDATE orders SET side = (SELECT side FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE side IS NULL"))
-    bind.execute(sa.text("UPDATE orders SET order_type = (SELECT order_type FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE order_type IS NULL"))
-    bind.execute(sa.text("UPDATE orders SET quantity = (SELECT quantity FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE quantity IS NULL"))
+    bind.execute(
+        sa.text(
+            "UPDATE orders SET symbol = (SELECT symbol FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE symbol IS NULL"
+        )
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE orders SET side = (SELECT side FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE side IS NULL"
+        )
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE orders SET order_type = (SELECT order_type FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE order_type IS NULL"
+        )
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE orders SET quantity = (SELECT quantity FROM order_intents WHERE order_intents.intent_id = orders.intent_id) WHERE quantity IS NULL"
+        )
+    )
 
     # Backfill strategy status with reasonable defaults
     bind.execute(sa.text("UPDATE strategies SET status = 'DRAFT' WHERE status IS NULL"))
@@ -109,7 +125,7 @@ def upgrade() -> None:
         ("risk_decisions", "correlation_id"),
         ("signals", "correlation_id"),
         ("strategies", "status"),
-        ("strategy_versions", "status")
+        ("strategy_versions", "status"),
     ]:
         result = bind.execute(sa.text(f"SELECT COUNT(*) FROM {table} WHERE {col} IS NULL")).scalar()
         if result and result > 0:

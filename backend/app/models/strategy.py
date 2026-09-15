@@ -62,12 +62,20 @@ class StrategyVersionModel(Base):
     source_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # JSON arrays describing capabilities
-    supported_asset_classes: Mapped[list[str]] = mapped_column(MutableList.as_mutable(JSON), default=list)
-    supported_timeframes: Mapped[list[str]] = mapped_column(MutableList.as_mutable(JSON), default=list)
-    required_indicators: Mapped[list[str]] = mapped_column(MutableList.as_mutable(JSON), default=list)
+    supported_asset_classes: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON), default=list
+    )
+    supported_timeframes: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON), default=list
+    )
+    required_indicators: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON), default=list
+    )
 
     # JSON schema of expected parameters (frozen snapshot)
-    parameters_schema: Mapped[dict[str, Any]] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
+    parameters_schema: Mapped[dict[str, Any]] = mapped_column(
+        MutableDict.as_mutable(JSON), default=dict
+    )
 
     strategy: Mapped["StrategyModel"] = relationship(back_populates="versions")
 

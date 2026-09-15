@@ -17,8 +17,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, event, inspect
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, event, inspect
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.transitions import validate_order_transition
 from app.models.base import Base

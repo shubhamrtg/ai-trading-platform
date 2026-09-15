@@ -163,7 +163,20 @@ async def test_strategy_version_immutability_active(db_session: AsyncSession) ->
 
     # Status change should still be allowed
     v.status = StrategyStatus.DEPRECATED
-    await db_session.commit()  # Should succeed
+    await db_session.commit()
+    
+    # Try in-place JSON mutation
+    v.parameters_schema["new_key"] = "bypassed"
+    with pytest.raises(ValueError, match="Cannot modify immutable field 'parameters_schema'"):
+        await db_session.commit()
+    await db_session.rollback()  # Should succeed
+    result = await db_session.execute(
+        select(StrategyVersionModel).where(
+            StrategyVersionModel.strategy_id == "s_active",
+            StrategyVersionModel.version == "1.0"
+        )
+    )
+    v = result.scalar_one()
     assert v.status == StrategyStatus.DEPRECATED
 
 
@@ -445,8 +458,9 @@ async def test_order_state_transitions_valid(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_order_state_transitions_invalid(db_session: AsyncSession) -> None:
-    """Test that invalid order state transitions are rejected."""
+async def test_order_state_transitions_exhaustive(db_session: AsyncSession) -> None:
+    """Test EVERY possible state transition (allowed and invalid)."""
+    # Create the prerequisite models once
     sig_id = uuid.uuid4()
     corr_id = uuid.uuid4()
     signal = _make_signal(sig_id=sig_id, corr_id=corr_id)
@@ -464,56 +478,58 @@ async def test_order_state_transitions_invalid(db_session: AsyncSession) -> None
     db_session.add(decision)
     await db_session.commit()
 
-    intent_id = uuid.uuid4()
-    intent = OrderIntentModel(
-        intent_id=intent_id,
-        correlation_id=corr_id,
-        originating_signal_id=sig_id,
-        risk_decision_id=dec_id,
-        account_id="acc1",
-        symbol="BTC-USD",
-        side=OrderSide.BUY.value,
-        order_type=OrderType.MARKET.value,
-        quantity=Decimal("1.0"),
-        time_in_force=TimeInForce.GTC.value,
-        idempotency_key=f"key-{uuid.uuid4()}",
-        creation_timestamp=datetime.now(UTC),
-    )
-    db_session.add(intent)
-    await db_session.commit()
+    from app.domain.transitions import VALID_ORDER_TRANSITIONS
 
-    order_uuid = uuid.uuid4()
-    order = OrderModel(
-        order_id=order_uuid,
-        correlation_id=corr_id,
-        intent_id=intent_id,
-        symbol="BTC-USD",
-        side=OrderSide.BUY.value,
-        order_type=OrderType.MARKET.value,
-        quantity=Decimal("1.0"),
-        state=OrderState.CREATED.value,
-    )
-    db_session.add(order)
-    await db_session.commit()
+    for from_state in OrderState:
+        for to_state in OrderState:
+            intent_id = uuid.uuid4()
+            intent = OrderIntentModel(
+                intent_id=intent_id,
+                correlation_id=corr_id,
+                originating_signal_id=sig_id,
+                risk_decision_id=dec_id,
+                account_id="acc1",
+                symbol="BTC-USD",
+                side=OrderSide.BUY.value,
+                order_type=OrderType.MARKET.value,
+                quantity=Decimal("1.0"),
+                time_in_force=TimeInForce.GTC.value,
+                idempotency_key=f"key-{uuid.uuid4()}",
+                creation_timestamp=datetime.now(UTC),
+            )
+            db_session.add(intent)
+            await db_session.commit()
 
-    # Invalid transition (CREATED -> FILLED)
-    order.state = OrderState.FILLED.value
-    with pytest.raises(ValueError, match="Invalid transition from CREATED to FILLED"):
-        await db_session.commit()
+            # We must recreate the order for each test to isolate tests
+            order_uuid = uuid.uuid4()
+            # Directly inject it into the db bypassing the transition check initially
+            order = OrderModel(
+                order_id=order_uuid,
+                correlation_id=corr_id,
+                intent_id=intent_id,
+                symbol="BTC-USD",
+                side=OrderSide.BUY.value,
+                order_type=OrderType.MARKET.value,
+                quantity=Decimal("1.0"),
+                state=from_state,
+            )
+            db_session.add(order)
+            await db_session.commit()
 
-    await db_session.rollback()
+            # Now try to transition
+            order.state = to_state
 
-    # Reload the order after rollback using the known UUID
-    result = await db_session.execute(select(OrderModel).where(OrderModel.order_id == order_uuid))
-    order = result.scalar_one()
+            if from_state == to_state:
+                allowed = True  # SQLAlchemy optimizations mean this never triggers the DB hook
+            else:
+                allowed = to_state in VALID_ORDER_TRANSITIONS.get(from_state, set())
 
-    # Try terminal state rule (Terminal -> anything is blocked)
-    order.state = OrderState.CANCELLED.value
-    await db_session.commit()  # CREATED -> CANCELLED is allowed
-
-    order.state = OrderState.FILLED.value
-    with pytest.raises(ValueError, match="is a terminal state"):
-        await db_session.commit()
+            if allowed:
+                await db_session.commit()  # Should not raise
+            else:
+                with pytest.raises(ValueError):
+                    await db_session.commit()
+                await db_session.rollback()
 
 
 # ============================================================

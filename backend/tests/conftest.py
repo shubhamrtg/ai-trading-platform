@@ -11,6 +11,8 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+# Ensure all models are imported so Base.metadata is populated
 from httpx import ASGITransport, AsyncClient
 
 # Set test environment BEFORE importing app modules
@@ -47,3 +49,5 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             base_url="http://testserver",
         ) as ac:
             yield ac
+
+

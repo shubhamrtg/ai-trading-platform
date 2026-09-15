@@ -41,9 +41,6 @@ class StrategyMetadata(BaseModel):
     name: str = Field(..., description="Unique strategy identifier name")
     description: str = Field(..., description="Human readable description")
     version: str = Field(..., description="Semver version string")
-    source_hash: str = Field(
-        ..., description="The canonical identity/hash of this executable artifact"
-    )
     supported_asset_classes: tuple[str, ...] = Field(default_factory=tuple)
     supported_timeframes: tuple[str, ...] = Field(default_factory=tuple)
     required_indicators: tuple[str, ...] = Field(default_factory=tuple)
@@ -130,17 +127,26 @@ class Strategy(ABC, Generic[TParams]):
 class StrategyRegistry:
     """Registry to bind exact StrategyVersion strings to executable implementations."""
 
-    _strategies: dict[tuple[str, str], type[Strategy[Any]]] = {}
+    _strategies: dict[tuple[str, str], tuple[type[Strategy[Any]], str]] = {}
 
     @classmethod
     def register(cls, strategy_class: type[Strategy[Any]]) -> None:
         key = (strategy_class.metadata.name, strategy_class.metadata.version)
         if key in cls._strategies:
             raise ValueError(f"Strategy {key} already registered")
-        cls._strategies[key] = strategy_class
+
+        import hashlib
+        import inspect
+        try:
+            source_code = inspect.getsource(strategy_class)
+            calculated_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
+        except (TypeError, OSError):
+            calculated_hash = "unknown"
+
+        cls._strategies[key] = (strategy_class, calculated_hash)
 
     @classmethod
-    def get(cls, name: str, version: str) -> type[Strategy[Any]]:
+    def get(cls, name: str, version: str) -> tuple[type[Strategy[Any]], str]:
         key = (name, version)
         if key not in cls._strategies:
             raise ValueError(f"Unknown strategy version: {key}")

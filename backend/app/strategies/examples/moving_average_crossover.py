@@ -38,7 +38,6 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
         name="MA_Crossover_Reference",
         description="A simple Moving Average Crossover for architectural validation.",
         version="1.0.0",
-        source_hash="0x0000_mock_canonical_hash",
         supported_asset_classes=("crypto", "stocks"),
         supported_timeframes=("1h", "1d"),
         required_indicators=(),

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 from app.models import (
     AuditEventModel,
     Base,
@@ -40,23 +41,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 
-@pytest.fixture
-async def db_session() -> AsyncSession:  # type: ignore[misc]
-    """Create an in-memory SQLite database with all tables for testing."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-    )
+@pytest_asyncio.fixture
+async def db_session():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Enable FK enforcement for SQLite
         await conn.execute(text("PRAGMA foreign_keys = ON"))
-
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session() as session:
         yield session
-
     await engine.dispose()
+
+
 
 
 # ============================================================

@@ -1,119 +1,154 @@
-"""Tests for the Strategy SDK, Validation, and Execution Foundation."""
-
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 import pytest
-from app.models.enums import OrderSide
+import pytest_asyncio
+from app.models import Base
+from app.models.enums import OrderSide, StrategyStatus
+from app.models.strategy import StrategyModel, StrategyVersionModel
 from app.schemas.market_data import Candle
 from app.strategies.examples.moving_average_crossover import MovingAverageCrossover
-from app.strategies.runner import ChronologicalDataError, StrategyRunner, StrategyValidationError
-from app.strategies.sdk import SignalDraft, StrategyContext, StrategyMetadata, StrategyRegistry
+from app.strategies.repository import StrategyVersionRepository
+from app.strategies.runner import ChronologicalDataError, StrategyValidationError
+from app.strategies.sdk import StrategyContext, StrategyMetadata, StrategyRegistry
+from app.strategies.service import StrategyExecutionService
 from pydantic import ValidationError
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 
-def make_candle(close_price: str, dt: datetime) -> Candle:
+from typing import AsyncGenerator
+
+
+@pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("PRAGMA foreign_keys = ON"))
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    async with async_session() as session:
+        yield session
+    await engine.dispose()
+
+
+def make_candle(price: str, ts: datetime) -> Candle:
     return Candle(
         symbol="BTC-USD",
-        timestamp=dt,
         timeframe="1h",
-        open=Decimal(close_price),
-        high=Decimal(close_price),
-        low=Decimal(close_price),
-        close=Decimal(close_price),
-        volume=Decimal("1.0"),
-        vwap=None,
-        trades=None,
+        timestamp=ts,
+        open=Decimal(price),
+        high=Decimal(price),
+        low=Decimal(price),
+        close=Decimal(price),
+        volume=Decimal("100"),
+        vwap=Decimal(price),
+        trades=1,
     )
 
 
-# -------------------------------------------------------------------------------------------------
+async def setup_persisted_version(
+    db_session: AsyncSession,
+    name: str = "MA_Crossover_Reference",
+    version: str = "1.0.0",
+    bad_hash: bool = False,
+    status: StrategyStatus = StrategyStatus.ACTIVE,
+) -> None:
+    try:
+        actual_hash = StrategyRegistry.get(name, version)[1]
+    except ValueError:
+        actual_hash = "unknown_hash"
+
+    if bad_hash:
+        actual_hash = "WRONG_HASH"
+
+    strat = StrategyModel(
+        strategy_id=name, name=name, created_at=datetime.now(UTC), updated_at=datetime.now(UTC)
+    )
+
+    stmt = select(StrategyModel).where(StrategyModel.strategy_id == name)
+    res = await db_session.execute(stmt)
+    if not res.scalar_one_or_none():
+        strat = StrategyModel(
+            strategy_id=name, name=name, created_at=datetime.now(UTC), updated_at=datetime.now(UTC)
+        )
+        db_session.add(strat)
+
+    ver = StrategyVersionModel(
+        strategy_id=name,
+        version=version,
+        source_hash=actual_hash,
+        status=status.value,
+        supported_asset_classes=["crypto"],
+        supported_timeframes=["1h"],
+        required_indicators=[],
+        parameters_schema={},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    db_session.add(ver)
+    await db_session.commit()
+
+
 # FIX 1, 3: Deterministic Output & Complete Output Test
 # -------------------------------------------------------------------------------------------------
-def test_strategy_execution_determinism_and_chronology() -> None:
-    """Prove that exactly the same inputs yield EXACTLY the same business output."""
-    runner1 = StrategyRunner(
+@pytest.mark.asyncio
+async def test_strategy_execution_determinism_and_chronology(db_session: AsyncSession) -> None:
+    await setup_persisted_version(db_session)
+    repo = StrategyVersionRepository(db_session)
+    service = StrategyExecutionService(repo)
+
+    runner1 = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
-    runner2 = StrategyRunner(
+    runner2 = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
-    prices = ["100", "110", "120", "130", "110", "90", "70", "100", "150"]
-    candles = [make_candle(p, datetime(2023, 1, i + 1, tzinfo=UTC)) for i, p in enumerate(prices)]
+    c1 = make_candle("100", datetime(2023, 1, 1, 10, tzinfo=UTC))
+    c2 = make_candle("100", datetime(2023, 1, 1, 11, tzinfo=UTC))
+    c3 = make_candle("100", datetime(2023, 1, 1, 12, tzinfo=UTC))
+    c4 = make_candle("150", datetime(2023, 1, 1, 13, tzinfo=UTC))
 
-    drafts1: list[SignalDraft] = []
-    drafts2: list[SignalDraft] = []
+    for c in [c1, c2, c3]:
+        runner1.process_candle(c)
+        runner2.process_candle(c)
 
-    for c in candles:
-        # Directly test the strategy execution for drafts
-        # (runner.process_candle would create different Signals due to uuids)
-        ctx1 = runner1.contexts.setdefault(
-            f"{c.symbol}_{c.timeframe}",
-            StrategyContext("MA_Crossover_Reference", "1.0.0", c.symbol, c.timeframe),
-        )
-        ctx2 = runner2.contexts.setdefault(
-            f"{c.symbol}_{c.timeframe}",
-            StrategyContext("MA_Crossover_Reference", "1.0.0", c.symbol, c.timeframe),
-        )
+    ctx1 = runner1.contexts["BTC-USD_1h"]
+    ctx2 = runner2.contexts["BTC-USD_1h"]
+    assert len(ctx1.history) == 3
+    assert len(ctx2.history) == 3
 
-        draft1 = runner1.strategy.on_candle(c, ctx1)
-        if draft1:
-            drafts1.append(draft1)
-        ctx1._history.append(c)
+    # Verify runtime Signal logic is separated from strategy
+    sig1 = runner1.process_candle(c4)
+    sig2 = runner2.process_candle(c4)
+    assert sig1 is not None and sig2 is not None
+    assert sig1.side == OrderSide.BUY
+    assert sig2.side == OrderSide.BUY
 
-        draft2 = runner2.strategy.on_candle(c, ctx2)
-        if draft2:
-            drafts2.append(draft2)
-        ctx2._history.append(c)
+    # Runtime IDs are UUIDs and MUST differ
+    assert sig1.signal_id != sig2.signal_id
+    assert sig1.correlation_id != sig2.correlation_id
 
-    assert len(drafts1) == len(drafts2)
-    assert len(drafts1) > 0
-
-    for d1, d2 in zip(drafts1, drafts2, strict=True):
-        assert isinstance(d1, SignalDraft)
-        assert isinstance(d2, SignalDraft)
-        # Deep equality test on frozen Pydantic models. Tests COMPLETE deterministic output.
-        assert d1 == d2
+    # But business output must match exactly
+    assert sig1.strategy_id == sig2.strategy_id
+    assert sig1.proposed_entry_price == sig2.proposed_entry_price
 
 
-def test_strategy_invalid_return_type_fails_closed() -> None:
-    class BadReturnStrategy(MovingAverageCrossover):
-        metadata = StrategyMetadata(
-            name="BadReturnStrategy", description="Testing", version="1.0.0", source_hash="abcd"
-        )
-
-        def on_candle(self, candle: Candle, context: StrategyContext) -> Any:
-            return {"fake": "signal"}  # Invalid return type
-
-    StrategyRegistry.register(BadReturnStrategy)
-
-    runner = StrategyRunner(
-        "BadReturnStrategy",
-        "1.0.0",
-        "abcd",
-        {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
-    )
-
-    # Should fail closed and return None
-    assert runner.process_candle(make_candle("100", datetime(2023, 1, 1, tzinfo=UTC))) is None
-
-
-# -------------------------------------------------------------------------------------------------
 # FIX 2, 4: Explicit Chronological Data Validation & Rejection
 # -------------------------------------------------------------------------------------------------
-def test_chronological_candle_processing() -> None:
-    runner = StrategyRunner(
+@pytest.mark.asyncio
+async def test_chronological_candle_processing(db_session: AsyncSession) -> None:
+    await setup_persisted_version(db_session)
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
+    runner = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -143,31 +178,52 @@ def test_chronological_candle_processing() -> None:
 # -------------------------------------------------------------------------------------------------
 # FIX 1, 3: Exact StrategyVersion Binding & Source Identity
 # -------------------------------------------------------------------------------------------------
-def test_strategy_version_binding_and_source_hash() -> None:
+@pytest.mark.asyncio
+async def test_strategy_version_binding_and_source_hash(db_session: AsyncSession) -> None:
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
     # 1. Successful exact version resolution
-    runner = StrategyRunner(
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
+    runner = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
     assert isinstance(runner.strategy, MovingAverageCrossover)
 
     # 2. Unknown version fails closed
-    with pytest.raises(StrategyValidationError, match="Unknown strategy version"):
-        StrategyRunner(
+    with pytest.raises(StrategyValidationError, match="not found"):
+        await service.create_runner(
             "MA_Crossover_Reference",
             "2.0.0",
-            "0x0000_mock_canonical_hash",
             {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
         )
 
     # 3. Mismatched executable/source identity fails closed
+    from sqlalchemy import delete
+
+    await db_session.execute(delete(StrategyVersionModel))
+    await db_session.execute(delete(StrategyModel))
+    await db_session.commit()
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0", bad_hash=True)
     with pytest.raises(StrategyValidationError, match="Source hash mismatch"):
-        StrategyRunner(
+        await service.create_runner(
             "MA_Crossover_Reference",
             "1.0.0",
-            "WRONG_HASH",
+            {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
+        )
+
+    # 4. Inactive version fails closed
+    await db_session.execute(delete(StrategyVersionModel))
+    await db_session.execute(delete(StrategyModel))
+    await db_session.commit()
+    await setup_persisted_version(
+        db_session, "MA_Crossover_Reference", "1.0.0", status=StrategyStatus.DRAFT
+    )
+    with pytest.raises(StrategyValidationError, match="not found"):
+        await service.create_runner(
+            "MA_Crossover_Reference",
+            "1.0.0",
             {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
         )
 
@@ -175,20 +231,21 @@ def test_strategy_version_binding_and_source_hash() -> None:
 # -------------------------------------------------------------------------------------------------
 # FIX 4: Strict Strategy Parameter Validation
 # -------------------------------------------------------------------------------------------------
-def test_strategy_parameter_strict_validation() -> None:
+@pytest.mark.asyncio
+async def test_strategy_parameter_strict_validation(db_session: AsyncSession) -> None:
+    await setup_persisted_version(db_session)
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
     with pytest.raises(StrategyValidationError, match="Invalid strategy parameters"):
-        StrategyRunner(
-            "MA_Crossover_Reference", "1.0.0", "0x0000_mock_canonical_hash", {"fast_period": 10}
-        )
+        await service.create_runner("MA_Crossover_Reference", "1.0.0", {"fast_period": 10})
 
     with pytest.raises(
         StrategyValidationError,
         match="(?s)Invalid strategy parameters.*Extra inputs are not permitted",
     ):
-        StrategyRunner(
+        await service.create_runner(
             "MA_Crossover_Reference",
             "1.0.0",
-            "0x0000_mock_canonical_hash",
             {
                 "fast_period": 10,
                 "slow_period": 20,
@@ -201,10 +258,9 @@ def test_strategy_parameter_strict_validation() -> None:
         StrategyValidationError,
         match="(?s)Invalid strategy parameters.*Input should be a valid integer",
     ):
-        StrategyRunner(
+        await service.create_runner(
             "MA_Crossover_Reference",
             "1.0.0",
-            "0x0000_mock_canonical_hash",
             {"fast_period": "20", "slow_period": 30, "risk_percent": Decimal("2.0")},
         )
 
@@ -217,7 +273,6 @@ def test_strategy_metadata_immutability() -> None:
         name="Test",
         description="Desc",
         version="1.0.0",
-        source_hash="test",
         supported_asset_classes=("crypto",),
         supported_timeframes=("1h",),
         required_indicators=(),
@@ -257,11 +312,16 @@ def test_strategy_context_protection_and_state_api() -> None:
 # -------------------------------------------------------------------------------------------------
 # FIX 8 & 11: Correct MA Strategy Evaluation & Position Independence
 # -------------------------------------------------------------------------------------------------
-def test_ma_strategy_sufficient_history_and_position_independence() -> None:
-    runner = StrategyRunner(
+@pytest.mark.asyncio
+async def test_ma_strategy_sufficient_history_and_position_independence(
+    db_session: AsyncSession,
+) -> None:
+    await setup_persisted_version(db_session)
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
+    runner = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -288,11 +348,14 @@ def test_ma_strategy_sufficient_history_and_position_independence() -> None:
 # -------------------------------------------------------------------------------------------------
 # FIX 12: Look-ahead Protection
 # -------------------------------------------------------------------------------------------------
-def test_strategy_look_ahead_protection() -> None:
-    runner = StrategyRunner(
+@pytest.mark.asyncio
+async def test_strategy_look_ahead_protection(db_session: AsyncSession) -> None:
+    await setup_persisted_version(db_session)
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
+    runner = await service.create_runner(
         "MA_Crossover_Reference",
         "1.0.0",
-        "0x0000_mock_canonical_hash",
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 

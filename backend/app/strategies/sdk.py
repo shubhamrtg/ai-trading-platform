@@ -16,9 +16,10 @@ from app.schemas.market_data import Candle
 
 class SignalDraft(BaseModel):
     """Deterministic business output of a strategy.
-    
+
     Contains NO runtime identity or orchestration fields.
     """
+
     model_config = ConfigDict(frozen=True)
 
     symbol: str
@@ -34,21 +35,47 @@ class SignalDraft(BaseModel):
 
 class StrategyMetadata(BaseModel):
     """Immutable metadata for a strategy."""
+
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(..., description="Unique strategy identifier name")
     description: str = Field(..., description="Human readable description")
     version: str = Field(..., description="Semver version string")
+    source_hash: str = Field(
+        ..., description="The canonical identity/hash of this executable artifact"
+    )
     supported_asset_classes: tuple[str, ...] = Field(default_factory=tuple)
     supported_timeframes: tuple[str, ...] = Field(default_factory=tuple)
     required_indicators: tuple[str, ...] = Field(default_factory=tuple)
 
 
+class StrategyState:
+    """Explicit strategy-owned calculation state API.
+
+    Prevents arbitrary replacement of the entire state container,
+    and isolates strategy logic from actual portfolio positions.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def contains(self, key: str) -> bool:
+        return key in self._data
+
+    def clear(self) -> None:
+        self._data.clear()
+
+
 class StrategyContext:
     """Execution context injected into the strategy.
 
-    Provides isolated read-only access to historical data and state,
-    preventing direct broker or database access.
+    Provides isolated read-only access to historical data and a safe strategy-owned state.
     """
 
     def __init__(self, strategy_id: str, strategy_version: str, symbol: str, timeframe: str):
@@ -57,11 +84,11 @@ class StrategyContext:
         self._symbol = symbol
         self._timeframe = timeframe
         self._history: list[Candle] = []
-        self.state: dict[str, Any] = {}
+        self.strategy_state = StrategyState()
 
     @property
     def history(self) -> tuple[Candle, ...]:
-        """Read-only access to the historical candles."""
+        """Read-only access to the canonical historical candles."""
         return tuple(self._history)
 
 
@@ -69,6 +96,7 @@ class StrategyParameters(BaseModel):
     """Base class for strategy parameters.
     Strategies should subclass this to define their schema using Pydantic.
     """
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
@@ -101,6 +129,7 @@ class Strategy(ABC, Generic[TParams]):
 
 class StrategyRegistry:
     """Registry to bind exact StrategyVersion strings to executable implementations."""
+
     _strategies: dict[tuple[str, str], type[Strategy[Any]]] = {}
 
     @classmethod

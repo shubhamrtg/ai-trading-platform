@@ -27,26 +27,27 @@ class ChronologicalDataError(Exception):
     pass
 
 
+from app.models.strategy import StrategyVersionModel
+
+
 class StrategyRunner:
     """Isolates and executes a strategy deterministically."""
 
     def __init__(
         self,
-        strategy_name: str,
-        strategy_version: str,
-        expected_source_hash: str,
+        version_record: StrategyVersionModel,
         parameters_dict: dict[str, Any],
     ):
         # 0. Version and Source Identity Binding
         try:
-            self.strategy_class = StrategyRegistry.get(strategy_name, strategy_version)
+            self.strategy_class, actual_hash = StrategyRegistry.get(version_record.strategy_id, version_record.version)
         except Exception as e:
             raise StrategyValidationError(f"Could not resolve strategy version: {e}") from e
 
-        if self.strategy_class.metadata.source_hash != expected_source_hash:
+        if actual_hash != version_record.source_hash:
             raise StrategyValidationError(
-                f"Source hash mismatch. Expected {expected_source_hash}, "
-                f"but got {self.strategy_class.metadata.source_hash}."
+                f"Source hash mismatch. Expected {version_record.source_hash}, "
+                f"but got {actual_hash}."
             )
 
         # 1. Parameter Validation

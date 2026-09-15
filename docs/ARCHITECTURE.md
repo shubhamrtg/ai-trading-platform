@@ -95,16 +95,32 @@ All data is normalized to a common `Candle` model with validation for missing da
 Plugin-based system where strategies implement a standard interface:
 
 ```python
-class TradingStrategy(ABC):
-    def initialize(self, config: StrategyConfig) -> None: ...
-    def generate_signal(self, market_data: MarketData) -> Optional[Signal]: ...
-    def generate_exit_signal(
-        self, market_data: MarketData, position: Position
-    ) -> Optional[Signal]: ...
-    def get_metadata(self) -> StrategyMetadata: ...
+class Strategy(ABC, Generic[TParams]):
+    metadata: ClassVar[StrategyMetadata]
+    parameters_schema: ClassVar[type[TParams]]
+
+    @abstractmethod
+    def on_candle(self, candle: Candle, context: StrategyContext) -> SignalDraft | None:
+        pass
 ```
 
-Strategies produce structured signals (not direct orders). They cannot bypass risk management.
+### Strategy Execution Contract
+
+```text
+Persisted StrategyVersion
+        |
+Exact Executable Strategy Binding
+        |
+Executable Source Identity / Hash Verification
+        |
+StrategyRunner
+        |
+SignalDraft
+        |
+Runtime Signal
+```
+
+Strategies produce structured `SignalDraft`s containing deterministic logic only (not direct orders or runtime-dependent signals). They are strictly bound to a `StrategyVersion` persisted in the database via a verifiable source hash (SHA-256 of the executable implementation). The `StrategyRunner` orchestrates state lifecycle, maintains read-only historical context, ensures chronicity of data feeds, and injects runtime orchestration IDs, completely separating strategy logic from execution routing.
 
 ### AI Engine
 
@@ -208,3 +224,4 @@ Structured logging, health checks, and metrics for all components.
 4. **Auditability** — Every decision is logged and traceable
 5. **Reproducibility** — Backtests with the same inputs produce the same outputs
 6. **Simplicity** — Start as a modular monolith; extract services only when needed
+

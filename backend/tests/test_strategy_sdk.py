@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from app.models.enums import OrderSide
+from app.models.strategy import StrategyVersionModel
 from app.schemas.market_data import Candle
 from app.strategies.examples.moving_average_crossover import MovingAverageCrossover
 from app.strategies.runner import ChronologicalDataError, StrategyRunner, StrategyValidationError
@@ -31,18 +32,21 @@ def make_candle(close_price: str, dt: datetime) -> Candle:
 # -------------------------------------------------------------------------------------------------
 # FIX 1, 3: Deterministic Output & Complete Output Test
 # -------------------------------------------------------------------------------------------------
+def get_mock_version(name: str = "MA_Crossover_Reference", version: str = "1.0.0", bad_hash: bool = False) -> StrategyVersionModel:
+    try:
+        hash_val = StrategyRegistry.get(name, version)[1] if not bad_hash else "WRONG_HASH"
+    except ValueError:
+        hash_val = "unknown_hash" if not bad_hash else "WRONG_HASH"
+    return StrategyVersionModel(strategy_id=name, version=version, source_hash=hash_val)
+
 def test_strategy_execution_determinism_and_chronology() -> None:
     """Prove that exactly the same inputs yield EXACTLY the same business output."""
     runner1 = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
     runner2 = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -87,8 +91,7 @@ def test_strategy_execution_determinism_and_chronology() -> None:
 def test_strategy_invalid_return_type_fails_closed() -> None:
     class BadReturnStrategy(MovingAverageCrossover):
         metadata = StrategyMetadata(
-            name="BadReturnStrategy", description="Testing", version="1.0.0", source_hash="abcd"
-        )
+            name="BadReturnStrategy", description="Testing", version="1.0.0",         )
 
         def on_candle(self, candle: Candle, context: StrategyContext) -> Any:
             return {"fake": "signal"}  # Invalid return type
@@ -96,9 +99,7 @@ def test_strategy_invalid_return_type_fails_closed() -> None:
     StrategyRegistry.register(BadReturnStrategy)
 
     runner = StrategyRunner(
-        "BadReturnStrategy",
-        "1.0.0",
-        "abcd",
+        get_mock_version(name="BadReturnStrategy"),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -111,9 +112,7 @@ def test_strategy_invalid_return_type_fails_closed() -> None:
 # -------------------------------------------------------------------------------------------------
 def test_chronological_candle_processing() -> None:
     runner = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -146,9 +145,7 @@ def test_chronological_candle_processing() -> None:
 def test_strategy_version_binding_and_source_hash() -> None:
     # 1. Successful exact version resolution
     runner = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
     assert isinstance(runner.strategy, MovingAverageCrossover)
@@ -156,18 +153,14 @@ def test_strategy_version_binding_and_source_hash() -> None:
     # 2. Unknown version fails closed
     with pytest.raises(StrategyValidationError, match="Unknown strategy version"):
         StrategyRunner(
-            "MA_Crossover_Reference",
-            "2.0.0",
-            "0x0000_mock_canonical_hash",
+        get_mock_version(version="2.0.0"),
             {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
         )
 
     # 3. Mismatched executable/source identity fails closed
     with pytest.raises(StrategyValidationError, match="Source hash mismatch"):
         StrategyRunner(
-            "MA_Crossover_Reference",
-            "1.0.0",
-            "WRONG_HASH",
+        get_mock_version(bad_hash=True),
             {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
         )
 
@@ -178,7 +171,7 @@ def test_strategy_version_binding_and_source_hash() -> None:
 def test_strategy_parameter_strict_validation() -> None:
     with pytest.raises(StrategyValidationError, match="Invalid strategy parameters"):
         StrategyRunner(
-            "MA_Crossover_Reference", "1.0.0", "0x0000_mock_canonical_hash", {"fast_period": 10}
+        get_mock_version(), {"fast_period": 10}
         )
 
     with pytest.raises(
@@ -186,9 +179,7 @@ def test_strategy_parameter_strict_validation() -> None:
         match="(?s)Invalid strategy parameters.*Extra inputs are not permitted",
     ):
         StrategyRunner(
-            "MA_Crossover_Reference",
-            "1.0.0",
-            "0x0000_mock_canonical_hash",
+        get_mock_version(),
             {
                 "fast_period": 10,
                 "slow_period": 20,
@@ -202,9 +193,7 @@ def test_strategy_parameter_strict_validation() -> None:
         match="(?s)Invalid strategy parameters.*Input should be a valid integer",
     ):
         StrategyRunner(
-            "MA_Crossover_Reference",
-            "1.0.0",
-            "0x0000_mock_canonical_hash",
+        get_mock_version(),
             {"fast_period": "20", "slow_period": 30, "risk_percent": Decimal("2.0")},
         )
 
@@ -217,8 +206,7 @@ def test_strategy_metadata_immutability() -> None:
         name="Test",
         description="Desc",
         version="1.0.0",
-        source_hash="test",
-        supported_asset_classes=("crypto",),
+                supported_asset_classes=("crypto",),
         supported_timeframes=("1h",),
         required_indicators=(),
     )
@@ -259,9 +247,7 @@ def test_strategy_context_protection_and_state_api() -> None:
 # -------------------------------------------------------------------------------------------------
 def test_ma_strategy_sufficient_history_and_position_independence() -> None:
     runner = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
@@ -290,9 +276,7 @@ def test_ma_strategy_sufficient_history_and_position_independence() -> None:
 # -------------------------------------------------------------------------------------------------
 def test_strategy_look_ahead_protection() -> None:
     runner = StrategyRunner(
-        "MA_Crossover_Reference",
-        "1.0.0",
-        "0x0000_mock_canonical_hash",
+        get_mock_version(),
         {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 

@@ -7,84 +7,69 @@ Strategies must be deterministic, isolated from execution, and yield Signals.
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any, ClassVar, Generic, TypeVar
-from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import OrderSide, SignalType
 from app.schemas.market_data import Candle
-from app.schemas.signal import Signal
+
+
+class SignalDraft(BaseModel):
+    """Deterministic business output of a strategy.
+    
+    Contains NO runtime identity or orchestration fields.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    timeframe: str
+    side: OrderSide
+    signal_type: SignalType
+    proposed_entry_price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    rationale: str | None = None
 
 
 class StrategyMetadata(BaseModel):
     """Immutable metadata for a strategy."""
+    model_config = ConfigDict(frozen=True)
 
     name: str = Field(..., description="Unique strategy identifier name")
     description: str = Field(..., description="Human readable description")
     version: str = Field(..., description="Semver version string")
-    supported_asset_classes: list[str] = Field(default_factory=list)
-    supported_timeframes: list[str] = Field(default_factory=list)
-    required_indicators: list[str] = Field(default_factory=list)
+    supported_asset_classes: tuple[str, ...] = Field(default_factory=tuple)
+    supported_timeframes: tuple[str, ...] = Field(default_factory=tuple)
+    required_indicators: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class StrategyContext:
     """Execution context injected into the strategy.
 
-    Provides isolated access to historical data and state,
+    Provides isolated read-only access to historical data and state,
     preventing direct broker or database access.
     """
 
-    def __init__(
-        self,
-        strategy_id: str,
-        strategy_version: str,
-        symbol: str,
-        timeframe: str,
-    ):
-        self.strategy_id = strategy_id
-        self.strategy_version = strategy_version
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.history: list[Candle] = []
+    def __init__(self, strategy_id: str, strategy_version: str, symbol: str, timeframe: str):
+        self._strategy_id = strategy_id
+        self._strategy_version = strategy_version
+        self._symbol = symbol
+        self._timeframe = timeframe
+        self._history: list[Candle] = []
         self.state: dict[str, Any] = {}
 
-    def create_signal(
-        self,
-        side: OrderSide,
-        signal_type: SignalType,
-        candle: Candle,
-        proposed_entry_price: Decimal | None = None,
-        stop_loss: Decimal | None = None,
-        take_profit: Decimal | None = None,
-        confidence: float | None = None,
-        rationale: str | None = None,
-    ) -> Signal:
-        """Create a signal bound to this context and current execution time."""
-        return Signal(
-            signal_id=uuid4(),
-            correlation_id=uuid4(),
-            strategy_id=self.strategy_id,
-            strategy_version=self.strategy_version,
-            symbol=self.symbol,
-            timestamp=candle.timestamp,
-            timeframe=self.timeframe,
-            side=side,
-            signal_type=signal_type,
-            proposed_entry_price=proposed_entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            confidence=confidence,
-            rationale=rationale,
-            metadata={"source": "StrategyRunner"},
-        )
+    @property
+    def history(self) -> tuple[Candle, ...]:
+        """Read-only access to the historical candles."""
+        return tuple(self._history)
 
 
 class StrategyParameters(BaseModel):
     """Base class for strategy parameters.
     Strategies should subclass this to define their schema using Pydantic.
     """
-
-    pass
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 TParams = TypeVar("TParams", bound=StrategyParameters)
@@ -96,7 +81,7 @@ class Strategy(ABC, Generic[TParams]):
     A strategy must:
     1. Define its metadata and parameter schema.
     2. Be deterministic.
-    3. Return Signals, not Orders.
+    3. Return SignalDrafts, not Orders or Signals with runtime IDs.
     """
 
     metadata: ClassVar[StrategyMetadata]
@@ -106,9 +91,32 @@ class Strategy(ABC, Generic[TParams]):
         self.parameters = parameters
 
     @abstractmethod
-    def on_candle(self, candle: Candle, context: StrategyContext) -> Signal | None:
-        """Process exactly one candle chronologically and optionally emit a Signal.
+    def on_candle(self, candle: Candle, context: StrategyContext) -> SignalDraft | None:
+        """Process exactly one candle chronologically and optionally emit a SignalDraft.
 
         Must be deterministic and must not mutate global state.
         """
         pass
+
+
+class StrategyRegistry:
+    """Registry to bind exact StrategyVersion strings to executable implementations."""
+    _strategies: dict[tuple[str, str], type[Strategy[Any]]] = {}
+
+    @classmethod
+    def register(cls, strategy_class: type[Strategy[Any]]) -> None:
+        key = (strategy_class.metadata.name, strategy_class.metadata.version)
+        if key in cls._strategies:
+            raise ValueError(f"Strategy {key} already registered")
+        cls._strategies[key] = strategy_class
+
+    @classmethod
+    def get(cls, name: str, version: str) -> type[Strategy[Any]]:
+        key = (name, version)
+        if key not in cls._strategies:
+            raise ValueError(f"Unknown strategy version: {key}")
+        return cls._strategies[key]
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._strategies.clear()

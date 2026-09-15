@@ -164,7 +164,7 @@ async def test_strategy_version_immutability_active(db_session: AsyncSession) ->
     # Status change should still be allowed
     v.status = StrategyStatus.DEPRECATED
     await db_session.commit()
-    
+
     # Try in-place JSON mutation
     v.parameters_schema["new_key"] = "bypassed"
     with pytest.raises(ValueError, match="Cannot modify immutable field 'parameters_schema'"):
@@ -455,6 +455,85 @@ async def test_order_state_transitions_valid(db_session: AsyncSession) -> None:
         order.state = state
         await db_session.commit()  # Should succeed
         assert order.state == state
+
+
+@pytest.mark.asyncio
+async def test_explicit_business_cancellation_semantics() -> None:
+    """Explicitly verify the required cancellation and execution rules."""
+    from app.domain.transitions import validate_order_transition
+    from app.models.enums import OrderState
+
+    # ---------------------------------------------------------
+    # TEST 1: Direct cancellation from active states is rejected
+    # ---------------------------------------------------------
+    active_states = [
+        OrderState.CREATED,
+        OrderState.VALIDATED,
+        OrderState.SUBMITTED,
+        OrderState.ACKNOWLEDGED,
+        OrderState.PARTIALLY_FILLED,
+    ]
+    for state in active_states:
+        with pytest.raises(ValueError, match="Invalid transition"):
+            validate_order_transition(state, OrderState.CANCELLED)
+
+    # ---------------------------------------------------------
+    # TEST 2: Cancellation through CANCEL_PENDING succeeds
+    # ---------------------------------------------------------
+    for state in active_states:
+        # Step A: Transition to CANCEL_PENDING must succeed
+        validate_order_transition(state, OrderState.CANCEL_PENDING)
+
+    # Step B: CANCEL_PENDING -> CANCELLED must succeed
+    validate_order_transition(OrderState.CANCEL_PENDING, OrderState.CANCELLED)
+
+    # ---------------------------------------------------------
+    # TEST 3: CANCEL_PENDING cannot bypass confirmation
+    # ---------------------------------------------------------
+    with pytest.raises(ValueError, match="Invalid transition"):
+        validate_order_transition(OrderState.CANCEL_PENDING, OrderState.FILLED)
+
+    with pytest.raises(ValueError, match="Invalid transition"):
+        validate_order_transition(OrderState.CANCEL_PENDING, OrderState.EXPIRED)
+
+    with pytest.raises(ValueError, match="Invalid transition"):
+        validate_order_transition(OrderState.CANCEL_PENDING, OrderState.REJECTED)
+
+    # ---------------------------------------------------------
+    # TEST 4: Terminal states remain terminal
+    # ---------------------------------------------------------
+    terminal_states = [
+        OrderState.FILLED,
+        OrderState.CANCELLED,
+        OrderState.REJECTED,
+        OrderState.EXPIRED,
+        OrderState.FAILED,
+    ]
+
+    for terminal in terminal_states:
+        with pytest.raises(ValueError, match="is a terminal state"):
+            validate_order_transition(terminal, OrderState.SUBMITTED)
+        with pytest.raises(ValueError, match="is a terminal state"):
+            validate_order_transition(terminal, OrderState.CANCEL_PENDING)
+
+    # Explicit terminal transition blocks
+    with pytest.raises(ValueError, match="is a terminal state"):
+        validate_order_transition(OrderState.FILLED, OrderState.CANCELLED)
+    with pytest.raises(ValueError, match="is a terminal state"):
+        validate_order_transition(OrderState.CANCELLED, OrderState.FILLED)
+
+    # ---------------------------------------------------------
+    # TEST 5: Existing valid transitions remain valid (Normal Execution Path)
+    # ---------------------------------------------------------
+    # Test the normal lifecycle path
+    validate_order_transition(OrderState.CREATED, OrderState.VALIDATED)
+    validate_order_transition(OrderState.VALIDATED, OrderState.SUBMITTED)
+    validate_order_transition(OrderState.SUBMITTED, OrderState.ACKNOWLEDGED)
+    validate_order_transition(OrderState.ACKNOWLEDGED, OrderState.PARTIALLY_FILLED)
+    validate_order_transition(OrderState.PARTIALLY_FILLED, OrderState.FILLED)
+
+    # Partial fills can be consecutive
+    validate_order_transition(OrderState.PARTIALLY_FILLED, OrderState.PARTIALLY_FILLED)
 
 
 @pytest.mark.asyncio

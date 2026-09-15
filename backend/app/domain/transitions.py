@@ -13,20 +13,17 @@ VALID_ORDER_TRANSITIONS: dict[OrderState, set[OrderState]] = {
         OrderState.VALIDATED,
         OrderState.FAILED,
         OrderState.CANCEL_PENDING,
-        OrderState.CANCELLED,
     },
     OrderState.VALIDATED: {
         OrderState.SUBMITTED,
         OrderState.FAILED,
         OrderState.CANCEL_PENDING,
-        OrderState.CANCELLED,
     },
     OrderState.SUBMITTED: {
         OrderState.ACKNOWLEDGED,
         OrderState.REJECTED,
         OrderState.FAILED,
         OrderState.CANCEL_PENDING,
-        OrderState.CANCELLED,
     },
     OrderState.ACKNOWLEDGED: {
         OrderState.PARTIALLY_FILLED,
@@ -34,7 +31,6 @@ VALID_ORDER_TRANSITIONS: dict[OrderState, set[OrderState]] = {
         OrderState.EXPIRED,
         OrderState.FAILED,
         OrderState.CANCEL_PENDING,
-        OrderState.CANCELLED,
     },
     OrderState.PARTIALLY_FILLED: {
         OrderState.PARTIALLY_FILLED,  # Consecutive partial fills allowed
@@ -42,7 +38,6 @@ VALID_ORDER_TRANSITIONS: dict[OrderState, set[OrderState]] = {
         OrderState.EXPIRED,
         OrderState.FAILED,
         OrderState.CANCEL_PENDING,
-        OrderState.CANCELLED,
     },
     OrderState.CANCEL_PENDING: {
         OrderState.CANCELLED,

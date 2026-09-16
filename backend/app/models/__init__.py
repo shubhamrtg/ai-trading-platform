@@ -6,6 +6,7 @@ can discover them for auto-generating migrations.
 
 from app.models.audit import AuditEventModel
 from app.models.base import Base
+from app.models.backtesting import BacktestRunModel
 from app.models.portfolio import PortfolioSnapshotModel, PositionModel
 from app.models.strategy import StrategyModel, StrategyVersionModel
 from app.models.trading import (
@@ -30,4 +31,5 @@ __all__ = [
     "PositionModel",
     "PortfolioSnapshotModel",
     "AuditEventModel",
+    "BacktestRunModel",
 ]

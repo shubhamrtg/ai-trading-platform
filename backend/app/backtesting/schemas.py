@@ -7,7 +7,7 @@ its progression, trades, equity curve, and final metrics.
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,7 +42,7 @@ class BacktestTradeRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    trade_id: UUID
+    trade_sequence: int
     strategy_id: str
     strategy_version: str
     symbol: str
@@ -102,16 +102,26 @@ class BacktestMetrics(BaseModel):
 
 
 class BacktestResult(BaseModel):
-    """Complete, immutable output of a backtest run."""
+    """Pure, deterministic business result of a backtest run.
+
+    Contains strictly repeatable outputs given the same inputs.
+    Does NOT contain runtime UUIDs or execution environment metadata.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    backtest_id: UUID
     request: BacktestRequest
-    status: BacktestStatus
-
-    metrics: BacktestMetrics | None = None
+    metrics: BacktestMetrics
     trades: list[BacktestTradeRecord] = Field(default_factory=list)
     equity_curve: list[BacktestEquityPoint] = Field(default_factory=list)
 
+
+class BacktestRun(BaseModel):
+    """Runtime wrapper tracking the execution of a backtest."""
+
+    run_id: UUID = Field(default_factory=uuid4)
+    status: BacktestStatus
+    request: BacktestRequest
+
+    result: BacktestResult | None = None
     error_message: str | None = None

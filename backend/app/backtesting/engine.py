@@ -6,9 +6,8 @@ chronological integrity, isolation, and safe simulated execution.
 
 from collections.abc import AsyncGenerator
 from decimal import Decimal
-from uuid import uuid4
 
-from app.backtesting.schemas import BacktestMetrics, BacktestRequest, BacktestResult
+from app.backtesting.schemas import BacktestMetrics, BacktestRequest, BacktestResult, BacktestRun
 from app.backtesting.simulator import BacktestExecutionSimulator
 from app.models.enums import BacktestStatus
 from app.schemas.market_data import Candle
@@ -29,11 +28,12 @@ class BacktestEngine:
         self,
         request: BacktestRequest,
         candle_provider: AsyncGenerator[Candle, None],
-    ) -> BacktestResult:
+    ) -> BacktestRun:
         """Run a completely isolated, deterministic backtest."""
-        backtest_id = uuid4()
-
         try:
+            if request.start_time >= request.end_time:
+                raise BacktestValidationError("start_time must be strictly before end_time.")
+
             # 1. Initialize authoritative Strategy Runner
             runner = await self.execution_service.create_runner(
                 strategy_id=request.strategy_id,
@@ -53,6 +53,9 @@ class BacktestEngine:
             last_candle = None
 
             async for candle in candle_provider:
+                if candle.timestamp < request.start_time or candle.timestamp > request.end_time:
+                    raise BacktestValidationError("Candle timestamp is outside requested window.")
+
                 if last_timestamp and candle.timestamp <= last_timestamp:
                     raise BacktestValidationError(
                         "Candles must be strictly chronological and non-duplicate."
@@ -83,18 +86,19 @@ class BacktestEngine:
             # 5. Calculate Metrics
             metrics = self._calculate_metrics(simulator, request.initial_capital)
 
-            return BacktestResult(
-                backtest_id=backtest_id,
+            business_result = BacktestResult(
                 request=request,
-                status=BacktestStatus.COMPLETED,
                 metrics=metrics,
                 trades=simulator.trades,
                 equity_curve=simulator.equity_curve,
             )
 
+            return BacktestRun(
+                request=request, status=BacktestStatus.COMPLETED, result=business_result
+            )
+
         except Exception as e:
-            return BacktestResult(
-                backtest_id=backtest_id,
+            return BacktestRun(
                 request=request,
                 status=BacktestStatus.FAILED,
                 error_message=str(e),

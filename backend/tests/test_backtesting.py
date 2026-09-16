@@ -1,10 +1,10 @@
 """Tests for the Phase D Backtesting Engine."""
 
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from collections.abc import AsyncGenerator
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.schemas import BacktestRequest
 from app.models.enums import BacktestStatus, OrderSide, StrategyStatus
@@ -13,15 +13,9 @@ from app.strategies.repository import StrategyVersionRepository
 from app.strategies.service import StrategyExecutionService
 from sqlalchemy.ext.asyncio import AsyncSession
 
-UTC = UTC
 
-
-# Small deterministic candle sequences for hand-calculated tests
 def create_candles() -> list[Candle]:
-    """
-    Candles for MACrossover strategy test (fast=2, slow=3):
-    Need at least 3 candles to initialize.
-    """
+    """Candles for MACrossover test (fast=2, slow=3)."""
     return [
         Candle(
             symbol="BTC-USD",
@@ -31,7 +25,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("110"),
             low=Decimal("90"),
             close=Decimal("100"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
         Candle(
             symbol="BTC-USD",
@@ -41,7 +37,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("110"),
             low=Decimal("90"),
             close=Decimal("100"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
         Candle(
             symbol="BTC-USD",
@@ -51,7 +49,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("110"),
             low=Decimal("90"),
             close=Decimal("100"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
         # MA cross above (BULLISH)
         Candle(
@@ -62,7 +62,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("130"),
             low=Decimal("90"),
             close=Decimal("120"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
         # MA cross below (BEARISH)
         Candle(
@@ -73,7 +75,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("120"),
             low=Decimal("80"),
             close=Decimal("80"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
         # Another candle to exit
         Candle(
@@ -84,7 +88,9 @@ def create_candles() -> list[Candle]:
             high=Decimal("90"),
             low=Decimal("70"),
             close=Decimal("85"),
-            volume=Decimal("10"), vwap=None, trades=None,
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
         ),
     ]
 
@@ -114,8 +120,6 @@ def base_request() -> BacktestRequest:
 async def test_backtest_successful_execution(
     db_session: AsyncSession, base_request: BacktestRequest
 ) -> None:
-    # Setup persisted strategy from Phase C testing utilities if needed
-    # We can just rely on the existing setup logic
     from tests.test_strategy_sdk import setup_persisted_version
 
     await setup_persisted_version(
@@ -123,34 +127,44 @@ async def test_backtest_successful_execution(
     )
 
     engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
-    result = await engine.run_backtest(base_request, candle_generator(create_candles()))
+    run = await engine.run_backtest(base_request, candle_generator(create_candles()))
 
-    assert result.status == BacktestStatus.COMPLETED
-    assert result.metrics is not None
+    assert run.status == BacktestStatus.COMPLETED
+    result = run.result
+    assert result is not None
     assert result.metrics.initial_capital == Decimal("100000.0")
-
-    # 1. Strategy evaluates Candle 4 (close 120), generates BUY.
-    # 2. Simulator executes at Candle 5 open (120).
-    #    Slippage 0.1% -> Price = 120 * 1.001 = 120.12
-    #    Qty = 100,000 / 120.12 = 832.49...
-    # 3. Strategy evaluates Candle 5 (close 80), generates SELL.
-    # 4. Simulator executes at Candle 6 open (80).
-    #    Slippage 0.1% -> Price = 80 * 0.999 = 79.92
 
     trades = result.trades
     assert len(trades) == 1
     t1 = trades[0]
 
     assert t1.side == OrderSide.BUY
-    assert t1.entry_price == Decimal("120") * Decimal("1.001")
-    assert t1.exit_price == Decimal("85")
+
+    # 1. Buy executes on Candle 5 open
+    expected_entry_price = Decimal("120") * Decimal("1.001")
+    assert t1.entry_price == expected_entry_price
+
+    # Cash tracking check to prove commission logic isn't resulting in negative balance
+    commission_rate = Decimal("0.001")
+    # quantity = 100,000 / (120.12 * 1.001)
+    expected_quantity = Decimal("100000.0") / (
+        expected_entry_price * (Decimal("1") + commission_rate)
+    )
+
+    assert abs(t1.quantity - expected_quantity) < Decimal("1e-8")
+
+    # 2. Sell executes on Candle 6 open (since signal generated on candle 5)
+    expected_exit_price = Decimal("85")
+    assert t1.exit_price == expected_exit_price
 
     assert t1.entry_timestamp == datetime(2023, 1, 5, tzinfo=UTC)
     assert t1.exit_timestamp == datetime(2023, 1, 6, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
-async def test_backtest_invalid_chronology(db_session: AsyncSession, base_request: BacktestRequest) -> None:
+async def test_backtest_invalid_chronology(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
     from tests.test_strategy_sdk import setup_persisted_version
 
     await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
@@ -158,52 +172,54 @@ async def test_backtest_invalid_chronology(db_session: AsyncSession, base_reques
     engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
 
     bad_candles = create_candles()
-    # Swap to make it out of order
     bad_candles[1], bad_candles[2] = bad_candles[2], bad_candles[1]
 
-    result = await engine.run_backtest(base_request, candle_generator(bad_candles))
-    assert result.status == BacktestStatus.FAILED
-    assert "chronological" in (result.error_message or "")
+    run = await engine.run_backtest(base_request, candle_generator(bad_candles))
+    assert run.status == BacktestStatus.FAILED
+    assert "chronological" in (run.error_message or "")
 
 
 @pytest.mark.asyncio
-async def test_backtest_missing_data(db_session: AsyncSession, base_request: BacktestRequest) -> None:
+async def test_backtest_missing_data(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
     from tests.test_strategy_sdk import setup_persisted_version
 
     await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
 
     engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
 
-    # Empty generator
-    result = await engine.run_backtest(base_request, candle_generator([]))
-    assert result.status == BacktestStatus.FAILED
-    assert "No historical data provided" in (result.error_message or "")
+    run = await engine.run_backtest(base_request, candle_generator([]))
+    assert run.status == BacktestStatus.FAILED
+    assert "No historical data provided" in (run.error_message or "")
 
 
 @pytest.mark.asyncio
-async def test_backtest_reproducibility(db_session: AsyncSession, base_request: BacktestRequest) -> None:
+async def test_backtest_reproducibility(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
     from tests.test_strategy_sdk import setup_persisted_version
 
     await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
 
     engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
 
-    result1 = await engine.run_backtest(base_request, candle_generator(create_candles()))
-    result2 = await engine.run_backtest(base_request, candle_generator(create_candles()))
+    run1 = await engine.run_backtest(base_request, candle_generator(create_candles()))
+    run2 = await engine.run_backtest(base_request, candle_generator(create_candles()))
 
-    assert result1.status == BacktestStatus.COMPLETED
-    assert result2.status == BacktestStatus.COMPLETED
+    assert run1.status == BacktestStatus.COMPLETED
+    assert run2.status == BacktestStatus.COMPLETED
 
-    assert result1.metrics and result2.metrics and result1.metrics.final_equity == result2.metrics.final_equity
-    assert len(result1.trades) == len(result2.trades)
-    assert result1.trades[0].net_pnl == result2.trades[0].net_pnl
+    assert run1.result is not None and run2.result is not None
+    # Deterministic equality test, unaffected by runtime UUIDs
+    assert run1.result == run2.result
 
-    # Backtest IDs must differ
-    assert result1.backtest_id != result2.backtest_id
+    # Run UUIDs differ
+    assert run1.run_id != run2.run_id
 
 
 @pytest.mark.asyncio
-async def test_backtest_end_of_period_forced_close(
+async def test_backtest_end_of_period_forced_close_and_equity_match(
     db_session: AsyncSession, base_request: BacktestRequest
 ) -> None:
     from tests.test_strategy_sdk import setup_persisted_version
@@ -214,12 +230,112 @@ async def test_backtest_end_of_period_forced_close(
 
     # Only supply candles up to the BUY signal, so the position remains open
     short_candles = create_candles()[:5]
-    # Candle 4 generates BUY. Candle 5 executes BUY. No Candle 6.
 
-    result = await engine.run_backtest(base_request, candle_generator(short_candles))
-    assert result.status == BacktestStatus.COMPLETED
+    run = await engine.run_backtest(base_request, candle_generator(short_candles))
+    assert run.status == BacktestStatus.COMPLETED
+
+    result = run.result
+    assert result is not None
 
     assert len(result.trades) == 1
-    # Exit price should be Candle 5 close
+    # Exit price should be Candle 5 close because forced exit happens using candle close
     assert result.trades[0].exit_price == Decimal("80")
     assert result.trades[0].exit_timestamp == datetime(2023, 1, 5, tzinfo=UTC)
+
+    # Validate final equity matches equity curve point
+    final_equity_curve_point = result.equity_curve[-1]
+    assert result.metrics.final_equity == final_equity_curve_point.equity
+
+
+@pytest.mark.asyncio
+async def test_backtest_time_window_enforcement(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
+    from tests.test_strategy_sdk import setup_persisted_version
+
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
+
+    engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
+
+    # 1. start_time > end_time should fail
+    bad_req1 = base_request.model_copy(update={"start_time": datetime(2023, 1, 10, tzinfo=UTC)})
+    run1 = await engine.run_backtest(bad_req1, candle_generator(create_candles()))
+    assert run1.status == BacktestStatus.FAILED
+    assert "start_time must be strictly before end_time" in (run1.error_message or "")
+
+    # 2. candle before start_time should fail
+    bad_req2 = base_request.model_copy(update={"start_time": datetime(2023, 1, 2, tzinfo=UTC)})
+    run2 = await engine.run_backtest(bad_req2, candle_generator(create_candles()))
+    assert run2.status == BacktestStatus.FAILED
+    assert "Candle timestamp is outside requested window" in (run2.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_zero_vs_high_commission(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
+    from tests.test_strategy_sdk import setup_persisted_version
+
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
+
+    engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
+
+    # Zero commission
+    req_zero = base_request.model_copy(
+        update={"commission_pct": Decimal("0.0"), "slippage_pct": Decimal("0.0")}
+    )
+    run_zero = await engine.run_backtest(req_zero, candle_generator(create_candles()))
+
+    # High commission (50% commission!)
+    req_high = base_request.model_copy(
+        update={"commission_pct": Decimal("50.0"), "slippage_pct": Decimal("0.0")}
+    )
+    run_high = await engine.run_backtest(req_high, candle_generator(create_candles()))
+
+    res_zero = run_zero.result
+    res_high = run_high.result
+    assert res_zero is not None and res_high is not None
+
+    trade_zero = res_zero.trades[0]
+    trade_high = res_high.trades[0]
+
+    # Quantity with zero commission should be exactly initial_capital / fill_price
+    # 100000 / 120 = 833.333...
+    expected_qty_zero = Decimal("100000.0") / Decimal("120")
+    assert abs(trade_zero.quantity - expected_qty_zero) < Decimal("1e-8")
+
+    # Quantity with 50% commission should be initial_capital / (fill_price * 1.5)
+    # 100000 / (120 * 1.5) = 100000 / 180 = 555.555...
+    expected_qty_high = Decimal("100000.0") / (Decimal("120") * Decimal("1.5"))
+    assert abs(trade_high.quantity - expected_qty_high) < Decimal("1e-8")
+
+    # Verify no negative cash anywhere in the equity curve
+    for pt in res_high.equity_curve:
+        assert pt.cash >= Decimal("0.0")
+
+
+@pytest.mark.asyncio
+async def test_final_candle_signal_ignored(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
+    from tests.test_strategy_sdk import setup_persisted_version
+
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
+
+    engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
+
+    # Candles 1-4. Candle 4 creates a BUY signal.
+    # Because it is the final candle, it has no next candle open to execute.
+    short_candles = create_candles()[:4]
+
+    # Edit the request window so it doesn't fail the window check
+    req = base_request.model_copy(update={"end_time": datetime(2023, 1, 4, tzinfo=UTC)})
+
+    run = await engine.run_backtest(req, candle_generator(short_candles))
+    assert run.status == BacktestStatus.COMPLETED
+
+    res = run.result
+    assert res is not None
+
+    # Zero trades because the signal generated at the end couldn't execute!
+    assert len(res.trades) == 0

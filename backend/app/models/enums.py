@@ -100,3 +100,12 @@ class StrategyStatus(str, Enum):
     ACTIVE = "ACTIVE"
     DEPRECATED = "DEPRECATED"
     DISABLED = "DISABLED"
+
+
+class BacktestStatus(str, Enum):
+    """Lifecycle status of a backtest run."""
+
+    CREATED = "CREATED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"

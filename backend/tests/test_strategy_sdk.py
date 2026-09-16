@@ -1,11 +1,8 @@
-from typing import Any
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
-import pytest_asyncio
-from app.models import Base
 from app.models.enums import OrderSide, StrategyStatus
 from app.models.strategy import StrategyModel, StrategyVersionModel
 from app.schemas.market_data import Candle
@@ -25,20 +22,8 @@ from app.strategies.sdk import (
 )
 from app.strategies.service import StrategyExecutionService
 from pydantic import ValidationError
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-
-@pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text("PRAGMA foreign_keys = ON"))
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-    async with async_session() as session:
-        yield session
-    await engine.dispose()
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def make_candle(price: str, ts: datetime) -> Candle:
@@ -384,11 +369,15 @@ async def test_strategy_look_ahead_protection(db_session: AsyncSession) -> None:
 # Exception Distinctions and Source Hashing
 # -------------------------------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_strategy_execution_error_distinction(db_session: AsyncSession, monkeypatch: Any) -> None:
+async def test_strategy_execution_error_distinction(
+    db_session: AsyncSession, monkeypatch: Any
+) -> None:
     await setup_persisted_version(db_session)
     service = StrategyExecutionService(StrategyVersionRepository(db_session))
     runner = await service.create_runner(
-        "MA_Crossover_Reference", "1.0.0", {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")}
+        "MA_Crossover_Reference",
+        "1.0.0",
+        {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
     )
 
     def buggy_on_candle(candle: Any, context: Any) -> None:

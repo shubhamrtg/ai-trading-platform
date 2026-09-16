@@ -11,10 +11,7 @@ class StrategyExecutionService:
         self._repository = repository
 
     async def create_runner(
-        self,
-        strategy_id: str,
-        version: str,
-        parameters_dict: dict[str, Any]
+        self, strategy_id: str, version: str, parameters_dict: dict[str, Any]
     ) -> StrategyRunner:
         """Create a StrategyRunner by explicitly resolving the persisted StrategyVersion."""
 

@@ -11,7 +11,9 @@ class StrategyVersionRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def get_executable_version(self, strategy_id: str, version: str) -> StrategyVersionModel | None:
+    async def get_executable_version(
+        self, strategy_id: str, version: str
+    ) -> StrategyVersionModel | None:
         """Fetch a strategy version, ensuring it is active/executable."""
         stmt = (
             select(StrategyVersionModel)
@@ -24,7 +26,7 @@ class StrategyVersionRepository:
         if record is None:
             return None
 
-        if record.status not in (StrategyStatus.ACTIVE, StrategyStatus.DEPRECATED):
+        if record.status != StrategyStatus.ACTIVE:
             return None
 
         return record

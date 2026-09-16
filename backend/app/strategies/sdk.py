@@ -14,6 +14,12 @@ from app.models.enums import OrderSide, SignalType
 from app.schemas.market_data import Candle
 
 
+class StrategyRegistrationError(Exception):
+    """Raised when strategy registration or source identity resolution fails."""
+
+    pass
+
+
 class SignalDraft(BaseModel):
     """Deterministic business output of a strategy.
 
@@ -137,11 +143,15 @@ class StrategyRegistry:
 
         import hashlib
         import inspect
+
         try:
             source_code = inspect.getsource(strategy_class)
             calculated_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
-        except (TypeError, OSError):
-            calculated_hash = "unknown"
+        except (TypeError, OSError) as e:
+            raise StrategyRegistrationError(
+                f"Failed to calculate source identity for strategy {strategy_class.__name__}. "
+                "A deterministic SHA-256 source hash is strictly required for strategy execution binding."
+            ) from e
 
         cls._strategies[key] = (strategy_class, calculated_hash)
 

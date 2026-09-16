@@ -111,7 +111,7 @@ Persisted StrategyVersion
         |
 Exact Executable Strategy Binding
         |
-Executable Source Identity / Hash Verification
+Executable Source Identity Verification
         |
 StrategyRunner
         |
@@ -120,7 +120,13 @@ SignalDraft
 Runtime Signal
 ```
 
-Strategies produce structured `SignalDraft`s containing deterministic logic only (not direct orders or runtime-dependent signals). They are strictly bound to a `StrategyVersion` persisted in the database via a verifiable source hash (SHA-256 of the executable implementation). The `StrategyRunner` orchestrates state lifecycle, maintains read-only historical context, ensures chronicity of data feeds, and injects runtime orchestration IDs, completely separating strategy logic from execution routing.
+Strategies produce structured `SignalDraft`s containing deterministic logic only (not direct orders or runtime-dependent signals). They are strictly bound to a `StrategyVersion` persisted in the database via a verifiable source hash.
+
+**Source Hash Guarantee**: The source hash is a deterministic SHA-256 hash of the registered executable strategy class source code, obtained via `inspect.getsource(strategy_class)`. It does NOT hash the entire package or transitive dependency graph.
+- A changed executable source results in a changed identity hash.
+- The inability to calculate this hash (e.g., dynamically generated classes) fails closed and prevents execution.
+- The persisted `StrategyVersion` in the database is the absolute authority.
+- Runtime verification strictly compares the executable implementation's identity against the persisted version's `source_hash`.
 
 ### AI Engine
 

@@ -49,5 +49,3 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             base_url="http://testserver",
         ) as ac:
             yield ac
-
-

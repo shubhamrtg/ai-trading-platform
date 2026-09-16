@@ -15,6 +15,12 @@ from app.strategies.sdk import SignalDraft, StrategyContext, StrategyRegistry
 logger = logging.getLogger(__name__)
 
 
+class StrategyExecutionError(Exception):
+    """Raised when a strategy throws an unexpected exception during execution."""
+
+    pass
+
+
 class StrategyValidationError(Exception):
     """Raised when a strategy fails validation (metadata, parameters, safety)."""
 
@@ -40,7 +46,9 @@ class StrategyRunner:
     ):
         # 0. Version and Source Identity Binding
         try:
-            self.strategy_class, actual_hash = StrategyRegistry.get(version_record.strategy_id, version_record.version)
+            self.strategy_class, actual_hash = StrategyRegistry.get(
+                version_record.strategy_id, version_record.version
+            )
         except Exception as e:
             raise StrategyValidationError(f"Could not resolve strategy version: {e}") from e
 
@@ -128,10 +136,13 @@ class StrategyRunner:
                 metadata={"source": "StrategyRunner"},
             )
 
+        except StrategyValidationError:
+            raise
         except Exception as e:
-            # Error Handling: Fail closed. Do not invent trades.
             logger.error(
                 f"Strategy {self.strategy_class.metadata.name} "
                 f"failed on candle {candle.timestamp}: {e}"
             )
-            return None
+            raise StrategyExecutionError(
+                f"Strategy {self.strategy_class.metadata.name} failed unexpectedly during execution."
+            ) from e

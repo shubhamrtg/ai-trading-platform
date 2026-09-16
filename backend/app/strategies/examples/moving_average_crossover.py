@@ -103,6 +103,4 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
         return None
 
 
-
-
 StrategyRegistry.register(MovingAverageCrossover)

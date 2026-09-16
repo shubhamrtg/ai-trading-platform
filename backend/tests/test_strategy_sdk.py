@@ -1,3 +1,5 @@
+from typing import Any
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -9,15 +11,22 @@ from app.models.strategy import StrategyModel, StrategyVersionModel
 from app.schemas.market_data import Candle
 from app.strategies.examples.moving_average_crossover import MovingAverageCrossover
 from app.strategies.repository import StrategyVersionRepository
-from app.strategies.runner import ChronologicalDataError, StrategyValidationError
-from app.strategies.sdk import StrategyContext, StrategyMetadata, StrategyRegistry
+from app.strategies.runner import (
+    ChronologicalDataError,
+    StrategyExecutionError,
+    StrategyValidationError,
+)
+from app.strategies.sdk import (
+    Strategy,
+    StrategyContext,
+    StrategyMetadata,
+    StrategyRegistrationError,
+    StrategyRegistry,
+)
 from app.strategies.service import StrategyExecutionService
 from pydantic import ValidationError
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-
-
-from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
 @pytest_asyncio.fixture
@@ -282,7 +291,7 @@ def test_strategy_metadata_immutability() -> None:
         metadata.name = "Mutated"
 
     with pytest.raises(AttributeError):
-        metadata.supported_asset_classes.append("stocks")  # type: ignore
+        metadata.supported_asset_classes.append("stocks")  # type: ignore[attr-defined]
 
 
 # -------------------------------------------------------------------------------------------------
@@ -296,7 +305,7 @@ def test_strategy_context_protection_and_state_api() -> None:
     # 1. Strategy receives read-only history
     assert isinstance(ctx.history, tuple)
     with pytest.raises(AttributeError):
-        ctx.history.append(make_candle("200", datetime(2023, 1, 2, tzinfo=UTC)))  # type: ignore
+        ctx.history.append(make_candle("200", datetime(2023, 1, 2, tzinfo=UTC)))  # type: ignore[attr-defined]
 
     # 2. Strategy can read/write its own state API
     assert ctx.strategy_state.get("some_key") is None
@@ -369,3 +378,72 @@ async def test_strategy_look_ahead_protection(db_session: AsyncSession) -> None:
     ctx = runner.contexts["BTC-USD_1h"]
     assert len(ctx.history) == 2
     assert c3 not in ctx.history
+
+
+# -------------------------------------------------------------------------------------------------
+# Exception Distinctions and Source Hashing
+# -------------------------------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_strategy_execution_error_distinction(db_session: AsyncSession, monkeypatch: Any) -> None:
+    await setup_persisted_version(db_session)
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+    runner = await service.create_runner(
+        "MA_Crossover_Reference", "1.0.0", {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")}
+    )
+
+    def buggy_on_candle(candle: Any, context: Any) -> None:
+        raise ValueError("Division by zero in strategy logic")
+
+    monkeypatch.setattr(runner.strategy, "on_candle", buggy_on_candle)
+
+    c1 = make_candle("100", datetime(2023, 1, 1, 10, tzinfo=UTC))
+
+    with pytest.raises(StrategyExecutionError, match="failed unexpectedly"):
+        runner.process_candle(c1)
+
+
+def test_source_hash_generation_and_failure(monkeypatch: Any) -> None:
+    # 1. Deterministic hashing
+    hash1 = StrategyRegistry.get("MA_Crossover_Reference", "1.0.0")[1]
+    assert len(hash1) == 64
+
+    # 2. Source inspection failure
+    class DynamicStrategy(Strategy[Any]):
+        metadata = StrategyMetadata(
+            name="Dynamic",
+            description="",
+            version="1.0.0",
+            supported_asset_classes=(),
+            supported_timeframes=(),
+            required_indicators=(),
+        )
+        parameters_schema = dict
+
+        def on_candle(self, c: Any, ctx: Any) -> None:
+            return None
+
+    import inspect
+
+    monkeypatch.setattr(
+        inspect, "getsource", lambda x: (_ for _ in ()).throw(OSError("No source found"))
+    )
+
+    with pytest.raises(
+        StrategyRegistrationError, match="deterministic SHA-256 source hash is strictly required"
+    ):
+        StrategyRegistry.register(DynamicStrategy)
+
+
+@pytest.mark.asyncio
+async def test_deprecated_strategy_rejection(db_session: AsyncSession) -> None:
+    await setup_persisted_version(
+        db_session, "MA_Crossover_Reference", "1.0.9", status=StrategyStatus.DEPRECATED
+    )
+    service = StrategyExecutionService(StrategyVersionRepository(db_session))
+
+    with pytest.raises(StrategyValidationError, match="not found"):
+        await service.create_runner(
+            "MA_Crossover_Reference",
+            "1.0.9",
+            {"fast_period": 2, "slow_period": 3, "risk_percent": Decimal("1.0")},
+        )

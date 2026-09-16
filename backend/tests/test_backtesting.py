@@ -379,10 +379,11 @@ async def test_accounting_golden_test(
         }
     )
 
-    # We will use exactly 3 candles to force a buy and force close it.
-    # Candle 1: initialize (100)
-    # Candle 2: initialize (100) -> MA cross above -> BUY on Candle 3 open.
-    # Candle 3: Open = 100 (BUY happens here). Close = 110 (Forced SELL happens here).
+    # We use exactly 5 candles.
+    # Candles 1-3 establish moving averages (period=2, 3).
+    # Candle 4: close spikes to 110. Fast MA > Slow MA -> BUY signal generated here.
+    # Candle 5: Next open. BUY executes at open=100. Backtest ends on Candle 5.
+    # Forced close occurs at Candle 5 close=150.
     candles = [
         Candle(
             symbol="BTC-USD",
@@ -437,16 +438,15 @@ async def test_accounting_golden_test(
             timeframe="1d",
             timestamp=datetime(2023, 1, 5, tzinfo=UTC),
             open=Decimal("100"),
-            high=Decimal("110"),
+            high=Decimal("150"),
             low=Decimal("90"),
-            close=Decimal("110"),
+            close=Decimal("150"),
             volume=Decimal("10"),
             vwap=None,
             trades=None,
         ),
     ]
 
-    # Let's adjust req to only expect up to day 5
     req = req.model_copy(update={"end_time": datetime(2023, 1, 5, tzinfo=UTC)})
 
     run = await engine.run_backtest(req, candle_generator(candles))
@@ -454,61 +454,201 @@ async def test_accounting_golden_test(
     assert run.result is not None
     trade = run.result.trades[0]
 
-    # --- HAND CALCULATED EXPECTATIONS ---
-    # Entry market price = Candle 3 open = 100
+    # --- ENTRY ---
+    # Candle 5 open = 100
     # Entry slippage = 1% of 100 = 1
     # Entry fill price = 100 + 1 = 101
-    expected_entry_fill = Decimal("101.0")
-    assert trade.entry_price == expected_entry_fill
+    entry_market_price = Decimal("100")
+    entry_slippage_rate = Decimal("0.01")
+    entry_slippage_per_unit = entry_market_price * entry_slippage_rate
+    entry_fill_price = entry_market_price + entry_slippage_per_unit
+
+    assert trade.entry_price == entry_fill_price
 
     # Quantity calculation
-    # cash = 10000
-    # fill = 101
-    # commission_rate = 0.01
-    # quantity = 10000 / (101 * 1.01) = 10000 / 102.01 = 98.02960494069...
-    expected_quantity = Decimal("10000.0") / Decimal("102.01")
+    initial_cash = Decimal("10000.0")
+    commission_rate = Decimal("0.01")
+    expected_quantity = initial_cash / (entry_fill_price * (Decimal("1") + commission_rate))
+
     assert abs(trade.quantity - expected_quantity) < Decimal("1e-8")
 
-    # Entry commission
-    # notional = qty * 101
-    # commission = notional * 0.01
-    expected_entry_commission = expected_quantity * Decimal("101.0") * Decimal("0.01")
+    # Entry fee
+    buy_notional = expected_quantity * entry_fill_price
+    entry_fee = buy_notional * commission_rate
 
-    # Exit market price = Candle 3 close = 110 (forced close)
-    # Exit slippage = 1% of 110 = 1.10
-    # Exit fill price = 110 - 1.10 = 108.90
-    expected_exit_fill = Decimal("108.90")
-    assert trade.exit_price == expected_exit_fill
+    # --- FORCED EXIT ---
+    # Candle 5 close = 150
+    # Exit slippage = 1% of 150 = 1.50
+    # Exit fill price = 150 - 1.50 = 148.50
+    exit_market_price = Decimal("150")
+    exit_slippage_rate = Decimal("0.01")
+    exit_slippage_per_unit = exit_market_price * exit_slippage_rate
+    exit_fill_price = exit_market_price - exit_slippage_per_unit
 
-    # Exit commission
-    # notional = qty * 108.90
-    # commission = notional * 0.01
-    expected_exit_commission = expected_quantity * Decimal("108.90") * Decimal("0.01")
+    assert trade.exit_price == exit_fill_price
 
-    # Total Commission
-    expected_total_commission = expected_entry_commission + expected_exit_commission
-    assert abs(trade.fees - expected_total_commission) < Decimal("1e-8")
+    # Exit fee
+    sell_notional = expected_quantity * exit_fill_price
+    exit_fee = sell_notional * commission_rate
 
-    # Gross P&L
-    # gross_pnl = (exit_fill - entry_fill) * qty = (108.90 - 101) * qty = 7.9 * qty
-    expected_gross_pnl = Decimal("7.9") * expected_quantity
+    # --- P&L ---
+    expected_gross_pnl = (exit_fill_price - entry_fill_price) * expected_quantity
     assert abs(trade.gross_pnl - expected_gross_pnl) < Decimal("1e-8")
 
-    # Total Slippage
-    # entry_slippage_total = qty * 1.0
-    # exit_slippage_total = qty * 1.10
-    # total_slippage = qty * 2.10
-    expected_total_slippage = expected_quantity * Decimal("2.10")
-    assert abs(trade.slippage - expected_total_slippage) < Decimal("1e-8")
-
-    # Net P&L
-    # net_pnl = gross_pnl - total_commission
-    expected_net_pnl = expected_gross_pnl - expected_total_commission
+    expected_net_pnl = expected_gross_pnl - entry_fee - exit_fee
     assert abs(trade.net_pnl - expected_net_pnl) < Decimal("1e-8")
 
-    # Final cash & equity
-    # Starts 10,000.
-    # Ends with 10,000 + net_pnl
-    expected_final_cash = Decimal("10000.0") + expected_net_pnl
-    assert abs(run.result.metrics.final_equity - expected_final_cash) < Decimal("1e-8")
-    assert abs(run.result.equity_curve[-1].cash - expected_final_cash) < Decimal("1e-8")
+    expected_total_commission = entry_fee + exit_fee
+    assert abs(trade.fees - expected_total_commission) < Decimal("1e-8")
+
+    expected_total_slippage = (entry_slippage_per_unit + exit_slippage_per_unit) * expected_quantity
+    assert abs(trade.slippage - expected_total_slippage) < Decimal("1e-8")
+
+    # --- INDEPENDENT CASH INVARIANT ---
+    # Path A: Transaction arithmetic
+    expected_final_cash_path_a = initial_cash - buy_notional - entry_fee + sell_notional - exit_fee
+
+    # Path B: P&L arithmetic
+    expected_final_cash_path_b = initial_cash + expected_net_pnl
+
+    # They must reconcile
+    assert abs(expected_final_cash_path_a - expected_final_cash_path_b) < Decimal("1e-8")
+
+    # And the system must match them
+    assert abs(run.result.metrics.final_equity - expected_final_cash_path_a) < Decimal("1e-8")
+    assert abs(run.result.equity_curve[-1].cash - expected_final_cash_path_a) < Decimal("1e-8")
+
+
+def test_simulator_level_accounting() -> None:
+    """Independent simulator-level accounting test removing strategy dependency."""
+    from app.backtesting.simulator import BacktestExecutionSimulator
+    from app.models.enums import OrderSide
+    from app.schemas.signal import Signal
+
+    initial_capital = Decimal("10000.0")
+    commission_pct = Decimal("1.0")
+    slippage_pct = Decimal("1.0")
+
+    simulator = BacktestExecutionSimulator(
+        initial_capital=initial_capital,
+        commission_pct=commission_pct,
+        slippage_pct=slippage_pct,
+    )
+
+    # 1. Queue a manual BUY signal on Candle T
+    candle_1 = Candle(
+        symbol="BTC-USD",
+        timeframe="1d",
+        timestamp=datetime(2023, 1, 1, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("100"),
+        low=Decimal("100"),
+        close=Decimal("100"),
+        volume=Decimal("10"),
+        vwap=None,
+        trades=None,
+    )
+    simulator.process_candle(candle_1)
+
+    from uuid import uuid4
+
+    from app.models.enums import SignalType
+
+    manual_buy = Signal(
+        signal_id=uuid4(),
+        correlation_id=uuid4(),
+        strategy_id="test",
+        strategy_version="1.0.0",
+        symbol="BTC-USD",
+        timeframe="1d",
+        timestamp=candle_1.timestamp,
+        side=OrderSide.BUY,
+        signal_type=SignalType.ENTRY,
+        confidence=1.0,
+        proposed_entry_price=None,
+        stop_loss=None,
+        take_profit=None,
+        rationale=None,
+    )
+    simulator.queue_signal(manual_buy)
+
+    # 2. Process Candle T+1. The BUY executes on open.
+    candle_2 = Candle(
+        symbol="BTC-USD",
+        timeframe="1d",
+        timestamp=datetime(2023, 1, 2, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("100"),
+        low=Decimal("100"),
+        close=Decimal("100"),
+        volume=Decimal("10"),
+        vwap=None,
+        trades=None,
+    )
+    simulator.process_candle(candle_2)
+
+    assert simulator.position is not None
+    assert simulator.position.entry_price == Decimal("101.0")
+
+    quantity = simulator.position.quantity
+
+    # 3. Queue a manual SELL signal on Candle T+1
+    manual_sell = Signal(
+        signal_id=uuid4(),
+        correlation_id=uuid4(),
+        strategy_id="test",
+        strategy_version="1.0.0",
+        symbol="BTC-USD",
+        timeframe="1d",
+        timestamp=candle_2.timestamp,
+        side=OrderSide.SELL,
+        signal_type=SignalType.EXIT,
+        confidence=1.0,
+        proposed_entry_price=None,
+        stop_loss=None,
+        take_profit=None,
+        rationale=None,
+    )
+    simulator.queue_signal(manual_sell)
+
+    # 4. Process Candle T+2. The SELL executes on open.
+    candle_3 = Candle(
+        symbol="BTC-USD",
+        timeframe="1d",
+        timestamp=datetime(2023, 1, 3, tzinfo=UTC),
+        open=Decimal("150"),
+        high=Decimal("150"),
+        low=Decimal("150"),
+        close=Decimal("150"),
+        volume=Decimal("10"),
+        vwap=None,
+        trades=None,
+    )
+    simulator.process_candle(candle_3)
+
+    assert simulator.position is None
+    assert len(simulator.trades) == 1
+
+    trade = simulator.trades[0]
+
+    # Expected Exit Fill
+    # Market open = 150. Slippage = 1.50. Fill = 148.50.
+    assert trade.exit_price == Decimal("148.50")
+
+    # Transaction accounting
+    entry_notional = quantity * Decimal("101.0")
+    entry_fee = entry_notional * Decimal("0.01")
+
+    exit_notional = quantity * Decimal("148.50")
+    exit_fee = exit_notional * Decimal("0.01")
+
+    expected_cash = initial_capital - entry_notional - entry_fee + exit_notional - exit_fee
+
+    # P&L accounting
+    gross_pnl = (Decimal("148.50") - Decimal("101.0")) * quantity
+    net_pnl = gross_pnl - entry_fee - exit_fee
+
+    # Invariant checks
+    assert abs(expected_cash - (initial_capital + net_pnl)) < Decimal("1e-8")
+    assert abs(trade.net_pnl - net_pnl) < Decimal("1e-8")
+    assert abs(simulator.cash - expected_cash) < Decimal("1e-8")

@@ -38,7 +38,16 @@ class BacktestRequest(BaseModel):
 
 
 class BacktestTradeRecord(BaseModel):
-    """Deterministic record of a completed or closed simulated trade."""
+    """Deterministic record of a completed or closed simulated trade.
+
+    Accounting definitions:
+    - entry_price: Actual price paid after adverse entry slippage.
+    - exit_price: Actual price received after adverse exit slippage.
+    - gross_pnl: P&L based on actual simulated execution prices.
+    - fees: Explicit transaction fees deducted from cash.
+    - slippage: Difference between reference market price and actual fill. Already in gross P&L.
+    - net_pnl: gross_pnl - fees.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -50,15 +59,19 @@ class BacktestTradeRecord(BaseModel):
     quantity: Decimal
 
     entry_timestamp: datetime
-    entry_price: Decimal
+    entry_price: Decimal = Field(..., description="Actual price paid after adverse entry slippage.")
 
     exit_timestamp: datetime
-    exit_price: Decimal
+    exit_price: Decimal = Field(
+        ..., description="Actual price received after adverse exit slippage."
+    )
 
-    gross_pnl: Decimal
-    fees: Decimal
-    slippage: Decimal
-    net_pnl: Decimal
+    gross_pnl: Decimal = Field(..., description="P&L based on actual simulated execution prices.")
+    fees: Decimal = Field(..., description="Explicit transaction fee deducted from cash.")
+    slippage: Decimal = Field(
+        ..., description="Total slippage amount (reference only, already in actual prices)."
+    )
+    net_pnl: Decimal = Field(..., description="Gross P&L minus commissions.")
     return_percentage: Decimal
 
 

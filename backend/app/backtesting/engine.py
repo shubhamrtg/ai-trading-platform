@@ -4,6 +4,7 @@ Orchestrates strategy execution against historical data, ensuring
 chronological integrity, isolation, and safe simulated execution.
 """
 
+import logging
 from collections.abc import AsyncGenerator
 from decimal import Decimal
 
@@ -11,11 +12,18 @@ from app.backtesting.schemas import BacktestMetrics, BacktestRequest, BacktestRe
 from app.backtesting.simulator import BacktestExecutionSimulator
 from app.models.enums import BacktestStatus
 from app.schemas.market_data import Candle
+from app.strategies.runner import StrategyExecutionError
 from app.strategies.service import StrategyExecutionService
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestValidationError(Exception):
     """Raised when historical data is invalid or out-of-order."""
+
+
+class BacktestSimulationError(Exception):
+    """Raised when the simulation accounting fails."""
 
 
 class BacktestEngine:
@@ -97,11 +105,18 @@ class BacktestEngine:
                 request=request, status=BacktestStatus.COMPLETED, result=business_result
             )
 
-        except Exception as e:
+        except (BacktestValidationError, StrategyExecutionError, BacktestSimulationError) as e:
             return BacktestRun(
                 request=request,
                 status=BacktestStatus.FAILED,
-                error_message=str(e),
+                error_message=f"{e.__class__.__name__}: {str(e)}",
+            )
+        except Exception:
+            logger.exception("Unexpected internal error during backtest")
+            return BacktestRun(
+                request=request,
+                status=BacktestStatus.FAILED,
+                error_message="Unexpected internal error during backtest.",
             )
 
     def _calculate_metrics(

@@ -154,7 +154,7 @@ async def test_backtest_successful_execution(
     assert abs(t1.quantity - expected_quantity) < Decimal("1e-8")
 
     # 2. Sell executes on Candle 6 open (since signal generated on candle 5)
-    expected_exit_price = Decimal("85")
+    expected_exit_price = Decimal("84.915")
     assert t1.exit_price == expected_exit_price
 
     assert t1.entry_timestamp == datetime(2023, 1, 5, tzinfo=UTC)
@@ -239,7 +239,8 @@ async def test_backtest_end_of_period_forced_close_and_equity_match(
 
     assert len(result.trades) == 1
     # Exit price should be Candle 5 close because forced exit happens using candle close
-    assert result.trades[0].exit_price == Decimal("80")
+    # Slippage is 0.1%. So exit fill price = 80 - 0.08 = 79.92
+    assert result.trades[0].exit_price == Decimal("79.92")
     assert result.trades[0].exit_timestamp == datetime(2023, 1, 5, tzinfo=UTC)
 
     # Validate final equity matches equity curve point
@@ -268,6 +269,22 @@ async def test_backtest_time_window_enforcement(
     run2 = await engine.run_backtest(bad_req2, candle_generator(create_candles()))
     assert run2.status == BacktestStatus.FAILED
     assert "Candle timestamp is outside requested window" in (run2.error_message or "")
+
+    # 3. candle after end_time should fail
+    bad_req3 = base_request.model_copy(update={"end_time": datetime(2023, 1, 5, tzinfo=UTC)})
+    run3 = await engine.run_backtest(bad_req3, candle_generator(create_candles()))
+    assert run3.status == BacktestStatus.FAILED
+    assert "Candle timestamp is outside requested window" in (run3.error_message or "")
+
+    # 4. exact start/end boundary should succeed
+    exact_req = base_request.model_copy(
+        update={
+            "start_time": datetime(2023, 1, 1, tzinfo=UTC),
+            "end_time": datetime(2023, 1, 6, tzinfo=UTC),
+        }
+    )
+    run_exact = await engine.run_backtest(exact_req, candle_generator(create_candles()))
+    assert run_exact.status == BacktestStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -339,3 +356,159 @@ async def test_final_candle_signal_ignored(
 
     # Zero trades because the signal generated at the end couldn't execute!
     assert len(res.trades) == 0
+
+
+@pytest.mark.asyncio
+async def test_accounting_golden_test(
+    db_session: AsyncSession, base_request: BacktestRequest
+) -> None:
+    from tests.test_strategy_sdk import setup_persisted_version
+
+    await setup_persisted_version(db_session, "MA_Crossover_Reference", "1.0.0")
+    engine = BacktestEngine(StrategyExecutionService(StrategyVersionRepository(db_session)))
+
+    # Force simple numbers
+    # Initial capital = 10,000
+    # Commission = 1%
+    # Slippage = 1%
+    req = base_request.model_copy(
+        update={
+            "initial_capital": Decimal("10000.0"),
+            "commission_pct": Decimal("1.0"),
+            "slippage_pct": Decimal("1.0"),
+        }
+    )
+
+    # We will use exactly 3 candles to force a buy and force close it.
+    # Candle 1: initialize (100)
+    # Candle 2: initialize (100) -> MA cross above -> BUY on Candle 3 open.
+    # Candle 3: Open = 100 (BUY happens here). Close = 110 (Forced SELL happens here).
+    candles = [
+        Candle(
+            symbol="BTC-USD",
+            timeframe="1d",
+            timestamp=datetime(2023, 1, 1, tzinfo=UTC),
+            open=Decimal("100"),
+            high=Decimal("100"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
+        ),
+        Candle(
+            symbol="BTC-USD",
+            timeframe="1d",
+            timestamp=datetime(2023, 1, 2, tzinfo=UTC),
+            open=Decimal("100"),
+            high=Decimal("100"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
+        ),
+        Candle(
+            symbol="BTC-USD",
+            timeframe="1d",
+            timestamp=datetime(2023, 1, 3, tzinfo=UTC),
+            open=Decimal("100"),
+            high=Decimal("100"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
+        ),
+        Candle(
+            symbol="BTC-USD",
+            timeframe="1d",
+            timestamp=datetime(2023, 1, 4, tzinfo=UTC),
+            open=Decimal("100"),
+            high=Decimal("110"),
+            low=Decimal("90"),
+            close=Decimal("110"),
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
+        ),
+        Candle(
+            symbol="BTC-USD",
+            timeframe="1d",
+            timestamp=datetime(2023, 1, 5, tzinfo=UTC),
+            open=Decimal("100"),
+            high=Decimal("110"),
+            low=Decimal("90"),
+            close=Decimal("110"),
+            volume=Decimal("10"),
+            vwap=None,
+            trades=None,
+        ),
+    ]
+
+    # Let's adjust req to only expect up to day 5
+    req = req.model_copy(update={"end_time": datetime(2023, 1, 5, tzinfo=UTC)})
+
+    run = await engine.run_backtest(req, candle_generator(candles))
+    assert run.status == BacktestStatus.COMPLETED
+    assert run.result is not None
+    trade = run.result.trades[0]
+
+    # --- HAND CALCULATED EXPECTATIONS ---
+    # Entry market price = Candle 3 open = 100
+    # Entry slippage = 1% of 100 = 1
+    # Entry fill price = 100 + 1 = 101
+    expected_entry_fill = Decimal("101.0")
+    assert trade.entry_price == expected_entry_fill
+
+    # Quantity calculation
+    # cash = 10000
+    # fill = 101
+    # commission_rate = 0.01
+    # quantity = 10000 / (101 * 1.01) = 10000 / 102.01 = 98.02960494069...
+    expected_quantity = Decimal("10000.0") / Decimal("102.01")
+    assert abs(trade.quantity - expected_quantity) < Decimal("1e-8")
+
+    # Entry commission
+    # notional = qty * 101
+    # commission = notional * 0.01
+    expected_entry_commission = expected_quantity * Decimal("101.0") * Decimal("0.01")
+
+    # Exit market price = Candle 3 close = 110 (forced close)
+    # Exit slippage = 1% of 110 = 1.10
+    # Exit fill price = 110 - 1.10 = 108.90
+    expected_exit_fill = Decimal("108.90")
+    assert trade.exit_price == expected_exit_fill
+
+    # Exit commission
+    # notional = qty * 108.90
+    # commission = notional * 0.01
+    expected_exit_commission = expected_quantity * Decimal("108.90") * Decimal("0.01")
+
+    # Total Commission
+    expected_total_commission = expected_entry_commission + expected_exit_commission
+    assert abs(trade.fees - expected_total_commission) < Decimal("1e-8")
+
+    # Gross P&L
+    # gross_pnl = (exit_fill - entry_fill) * qty = (108.90 - 101) * qty = 7.9 * qty
+    expected_gross_pnl = Decimal("7.9") * expected_quantity
+    assert abs(trade.gross_pnl - expected_gross_pnl) < Decimal("1e-8")
+
+    # Total Slippage
+    # entry_slippage_total = qty * 1.0
+    # exit_slippage_total = qty * 1.10
+    # total_slippage = qty * 2.10
+    expected_total_slippage = expected_quantity * Decimal("2.10")
+    assert abs(trade.slippage - expected_total_slippage) < Decimal("1e-8")
+
+    # Net P&L
+    # net_pnl = gross_pnl - total_commission
+    expected_net_pnl = expected_gross_pnl - expected_total_commission
+    assert abs(trade.net_pnl - expected_net_pnl) < Decimal("1e-8")
+
+    # Final cash & equity
+    # Starts 10,000.
+    # Ends with 10,000 + net_pnl
+    expected_final_cash = Decimal("10000.0") + expected_net_pnl
+    assert abs(run.result.metrics.final_equity - expected_final_cash) < Decimal("1e-8")
+    assert abs(run.result.equity_curve[-1].cash - expected_final_cash) < Decimal("1e-8")

@@ -96,7 +96,10 @@ class BacktestExecutionSimulator:
         """Force close an open position at the end of the backtest using candle close."""
         if self.position:
             # Execute exit at the candle's close price instead of next open
-            self._execute_exit(self.position, candle.close, candle.timestamp)
+            # Apply same adverse slippage model as normal long exit
+            slippage_amount = candle.close * (self.slippage_pct / Decimal("100.0"))
+            fill_price = candle.close - slippage_amount
+            self._execute_exit(self.position, fill_price, candle.timestamp, slippage_amount)
             self.position = None
 
             # Record the final equity state

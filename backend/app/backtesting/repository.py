@@ -29,21 +29,25 @@ class BacktestRunRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def create(self, model: BacktestRunModel) -> BacktestRunModel:
+    async def create(self, model: BacktestRunModel) -> tuple[BacktestRunModel, bool]:
         """Persist a new backtest run.
 
+        Returns (model, created_flag).
         If an IntegrityError occurs due to an idempotency-key UNIQUE collision
         (concurrent duplicate request), the transaction is rolled back and the
-        existing run is returned.  Non-idempotency IntegrityErrors are re-raised.
+        existing run is returned with created_flag=False. Non-idempotency
+        IntegrityErrors are re-raised.
         """
         self.session.add(model)
         try:
             await self.session.commit()
+            await self.session.refresh(model)
+            return model, True
         except IntegrityError as exc:
             await self.session.rollback()
 
             # Only handle the idempotency-key collision path.
-            if model.idempotency_key is not None:
+            if model.idempotency_key is not None and "idempotency" in str(exc).lower():
                 existing = await self.get_by_idempotency_key(model.idempotency_key)
                 if existing is not None:
                     logger.info(
@@ -51,13 +55,10 @@ class BacktestRunRepository:
                         model.idempotency_key,
                         existing.run_id,
                     )
-                    return existing
+                    return existing, False
 
             # Not an idempotency collision — propagate the original error.
             raise exc
-
-        await self.session.refresh(model)
-        return model
 
     async def update(self, model: BacktestRunModel) -> BacktestRunModel:
         """Update an existing backtest run."""

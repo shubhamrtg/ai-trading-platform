@@ -64,12 +64,12 @@ class BacktestApplicationService:
             slippage_pct=request.slippage_pct,
             parameters=request.parameters,
         )
-        run_model = await self.repository.create(run_model)
+        run_model, created = await self.repository.create(run_model)
 
         # If create() resolved an idempotency collision, the returned model is
-        # the *existing* persisted run (not our freshly built object).  Return it
-        # directly — do not re-execute.
-        if run_model.status != BacktestStatus.CREATED:
+        # the *existing* persisted run (not our freshly built object) and created is False.
+        # Return it directly — do not re-execute.
+        if not created:
             return run_model
 
         # 4. Update to RUNNING

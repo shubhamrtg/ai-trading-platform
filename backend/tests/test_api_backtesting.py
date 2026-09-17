@@ -141,7 +141,7 @@ async def test_idempotency_collision_handled(
 
     # --- Pre-insert the "winner" run directly at the DB level ---
     winner = BacktestRunModel(
-        status=BacktestStatus.COMPLETED,
+        status=BacktestStatus.CREATED,
         idempotency_key="race-collision-key",
         strategy_id="MA_Crossover_Reference",
         strategy_version="1.0.0",
@@ -152,7 +152,7 @@ async def test_idempotency_collision_handled(
         initial_capital=Decimal("100000.0"),
         commission_pct=Decimal("0.0"),
         slippage_pct=Decimal("0.0"),
-        parameters={},
+        parameters={"fast_period": 2, "slow_period": 3, "risk_percent": "1.0"},
     )
     db_session.add(winner)
     await db_session.commit()
@@ -191,12 +191,20 @@ async def test_idempotency_collision_handled(
         idempotency_key="race-collision-key",
     )
 
+    # Mock the engine to prove it is NEVER called by the losing request
+    from unittest.mock import AsyncMock
+
+    backtest_service.engine.run_backtest = AsyncMock()  # type: ignore[method-assign]
+
     # This must NOT raise — the repository catches IntegrityError
     result = await backtest_service.execute_backtest(req)
 
     # Must return the winner, not a new run
     assert result.run_id == winner_run_id
-    assert result.status == BacktestStatus.COMPLETED
+    assert result.status == BacktestStatus.CREATED
+
+    # Verify execution did NOT happen
+    backtest_service.engine.run_backtest.assert_not_called()
 
     # Verify exactly one run exists for this key
     from sqlalchemy import func, select

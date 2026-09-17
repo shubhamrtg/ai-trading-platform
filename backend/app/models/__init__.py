@@ -37,3 +37,6 @@ __all__ = [
 from app.models.market_data import CandleModel
 
 __all__.append("CandleModel")
+
+from app.models.market_data import MarketDataCoverageModel
+__all__.append('MarketDataCoverageModel')

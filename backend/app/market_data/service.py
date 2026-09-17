@@ -60,28 +60,23 @@ class MarketDataService(MarketDataProvider):
             self._fetch_locks[lock_key] = asyncio.Lock()
 
         async with self._fetch_locks[lock_key]:
-            # Check what timestamps we already have and ensure they are tz-aware (SQLite strips them)
+            # Deterministic coverage logic: Check if the exact requested range is already covered by a prior fetch
+            is_covered = await self.repository.is_range_covered(symbol, timeframe, start_time, end_time)
+            if is_covered:
+                logger.info(f"Cache completely covers requested range for {symbol} between {start_time} and {end_time}. Skipping vendor.")
+                return
+
+            # Fetch from vendor
+            logger.info(f"Checking vendor data for {symbol} {timeframe} between {start_time} and {end_time}")
+            vendor_candles = await self.vendor_client.fetch_historical_candles(symbol, timeframe, start_time, end_time)
+
+            # We still query existing timestamps to enforce the Immutable Cache Contract (never overwrite)
             from datetime import UTC
             raw_timestamps = await self.repository.get_existing_timestamps(symbol, timeframe, start_time, end_time)
             existing_timestamps = {
                 ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
                 for ts in raw_timestamps
             }
-
-            # Simple heuristic to determine if the cache is "complete" for this range:
-            # If we have data that spans the requested range (within a 7-day margin for weekends/holidays),
-            # we consider it complete and skip the vendor call to respect API rate limits.
-            if existing_timestamps:
-                from datetime import timedelta
-                min_ts = min(existing_timestamps)
-                max_ts = max(existing_timestamps)
-                if min_ts <= start_time + timedelta(days=7) and max_ts >= end_time - timedelta(days=7):
-                    logger.info(f"Cache considered complete for {symbol} between {start_time} and {end_time}. Skipping vendor.")
-                    return
-
-            # Fetch from vendor
-            logger.info(f"Checking vendor data for {symbol} {timeframe} between {start_time} and {end_time}")
-            vendor_candles = await self.vendor_client.fetch_historical_candles(symbol, timeframe, start_time, end_time)
 
             if not vendor_candles:
                 return
@@ -118,3 +113,6 @@ class MarketDataService(MarketDataProvider):
             if new_models:
                 logger.info(f"Persisting {len(new_models)} new candles for {symbol}")
                 await self.repository.insert_missing(new_models)
+
+            # After a successful fetch and persist, explicitly record that this range is now covered
+            await self.repository.mark_range_covered(symbol, timeframe, start_time, end_time)

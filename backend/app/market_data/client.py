@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import httpx
 
-from app.market_data.exceptions import DataIntegrityError, ProviderUnavailableError
+from app.market_data.exceptions import ChronologyError, DataIntegrityError, ProviderUnavailableError
 from app.schemas.market_data import Candle
 
 logger = logging.getLogger(__name__)
@@ -92,9 +92,12 @@ class YahooFinanceClient(HistoricalVendorClient):
 
         return self._parse_yahoo_response(symbol, timeframe, data)
 
-    def _parse_yahoo_response(self, symbol: str, timeframe: str, data: dict) -> list[Candle]:
+    def _parse_yahoo_response(self, symbol: str, timeframe: str, data: dict[str, object]) -> list[Candle]:
         try:
-            result = data["chart"]["result"]
+            # We use Any here to bypass strictly typed dictionary accesses since Yahoo responses are heavily nested
+            from typing import Any, cast
+            data_any = cast(Any, data)
+            result = data_any["chart"]["result"]
             if not result:
                 return []
 
@@ -113,18 +116,23 @@ class YahooFinanceClient(HistoricalVendorClient):
             closes = indicators.get("close", [])
             volumes = indicators.get("volume", [])
 
-            candles = []
+            candles: list[Candle] = []
 
             for i, ts in enumerate(timestamps):
-                # Yahoo sometimes returns nulls for missing data points in the array
+                # Reject missing/invalid timestamps
+                if ts is None:
+                    raise DataIntegrityError(f"Missing timestamp in Yahoo Finance response for {symbol}")
+
+                # Reject null OHLC values
                 if opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
-                    continue
+                    raise DataIntegrityError(f"Null price value in Yahoo Finance response for {symbol} at {ts}")
+
+                # Check for negative prices or volumes
+                if opens[i] < 0 or highs[i] < 0 or lows[i] < 0 or closes[i] < 0:
+                    raise DataIntegrityError(f"Negative price in Yahoo Finance response for {symbol} at {ts}")
 
                 candle_time = datetime.fromtimestamp(ts, tz=UTC)
 
-                # We enforce non-negative prices and volume, but Yahoo can sometimes give messy data.
-                # If negative, we drop it or throw error based on strictness. Let's strictly drop it
-                # or just use Decimal. We will parse it and the domain validation will catch it if bad.
                 candle = Candle(
                     symbol=symbol,
                     timeframe=timeframe,
@@ -134,12 +142,18 @@ class YahooFinanceClient(HistoricalVendorClient):
                     low=Decimal(str(lows[i])),
                     close=Decimal(str(closes[i])),
                     volume=Decimal(str(volumes[i] if volumes[i] is not None else 0.0)),
+                    vwap=None,
+                    trades=None,
                 )
 
-                # Basic domain validation: H >= L, H >= O, H >= C, L <= O, L <= C
+                # Explicit OHLC relationship validation
                 if candle.high < candle.low or candle.high < candle.open or candle.high < candle.close or candle.low > candle.open or candle.low > candle.close:
-                    logger.warning(f"Malformed candle data from Yahoo Finance for {symbol} at {candle_time}, dropping.")
-                    continue
+                    raise DataIntegrityError(f"Invalid OHLC relationship for {symbol} at {candle_time}: O={candle.open}, H={candle.high}, L={candle.low}, C={candle.close}")
+
+                # Strict Chronology validation
+                if candles:
+                    if candle.timestamp <= candles[-1].timestamp:
+                        raise ChronologyError(f"Non-chronological or duplicate timestamp from Yahoo Finance: {candle.timestamp} <= {candles[-1].timestamp}")
 
                 candles.append(candle)
 

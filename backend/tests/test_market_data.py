@@ -155,3 +155,124 @@ async def test_phase_e_integration(
 
     assert run_model.status == BacktestStatus.COMPLETED
     assert vendor.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_partially_cached_calls_vendor(service: MarketDataService, vendor: MockVendorClient):
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 5, tzinfo=UTC)
+    t3 = datetime(2023, 1, 10, tzinfo=UTC)
+
+    vendor.candles_to_return = [make_candle("BTC", t1), make_candle("BTC", t2)]
+    _ = [c async for c in service.get_candles("BTC", "1d", t1, t2)]
+    assert vendor.call_count == 1
+
+    vendor.candles_to_return = [
+        make_candle("BTC", t1),
+        make_candle("BTC", t2),
+        make_candle("BTC", t3),
+    ]
+    candles = [c async for c in service.get_candles("BTC", "1d", t1, t3)]
+    assert vendor.call_count == 2
+    assert len(candles) == 3
+
+
+@pytest.mark.asyncio
+async def test_malformed_vendor_data(vendor: MockVendorClient):
+    from app.market_data.client import YahooFinanceClient
+    from app.market_data.exceptions import DataIntegrityError
+
+    client = YahooFinanceClient()
+
+    # 1. Missing timestamp
+    data = {
+        "chart": {
+            "result": [
+                {
+                    "indicators": {
+                        "quote": [
+                            {"open": [1], "high": [1], "low": [1], "close": [1], "volume": [1]}
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    assert (
+        client._parse_yahoo_response("BTC", "1d", data) == []
+    )  # handled naturally if no timestamp array
+
+    # 2. Null price
+    data = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1000],
+                    "indicators": {
+                        "quote": [
+                            {"open": [None], "high": [1], "low": [1], "close": [1], "volume": [1]}
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    with pytest.raises(DataIntegrityError, match="Null price"):
+        client._parse_yahoo_response("BTC", "1d", data)
+
+    # 3. Negative price
+    data = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1000],
+                    "indicators": {
+                        "quote": [
+                            {"open": [-1], "high": [1], "low": [1], "close": [1], "volume": [1]}
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    with pytest.raises(DataIntegrityError, match="Negative price"):
+        client._parse_yahoo_response("BTC", "1d", data)
+
+    # 4. Invalid OHLC
+    data = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1000],
+                    "indicators": {
+                        "quote": [
+                            {"open": [100], "high": [90], "low": [80], "close": [95], "volume": [1]}
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    with pytest.raises(DataIntegrityError, match="Invalid OHLC"):
+        client._parse_yahoo_response("BTC", "1d", data)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_integrity_error(repo: CandleRepository):
+
+    from app.models.market_data import CandleModel
+    from sqlalchemy.exc import IntegrityError
+
+    c1 = CandleModel(
+        symbol=None,  # This should trigger a NOT NULL integrity error
+        timeframe="1d",
+        timestamp=datetime(2023, 1, 1, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        volume=Decimal("1000"),
+    )
+
+    with pytest.raises(IntegrityError):
+        await repo.insert_missing([c1])

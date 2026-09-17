@@ -66,6 +66,12 @@ class BacktestApplicationService:
         )
         run_model = await self.repository.create(run_model)
 
+        # If create() resolved an idempotency collision, the returned model is
+        # the *existing* persisted run (not our freshly built object).  Return it
+        # directly — do not re-execute.
+        if run_model.status != BacktestStatus.CREATED:
+            return run_model
+
         # 4. Update to RUNNING
         run_model.status = BacktestStatus.RUNNING
         run_model = await self.repository.update(run_model)

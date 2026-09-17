@@ -1,10 +1,14 @@
+import logging
 from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.backtesting import BacktestRunModel
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestRunRepository:
@@ -26,9 +30,32 @@ class BacktestRunRepository:
         return result.scalar_one_or_none()
 
     async def create(self, model: BacktestRunModel) -> BacktestRunModel:
-        """Persist a new backtest run."""
+        """Persist a new backtest run.
+
+        If an IntegrityError occurs due to an idempotency-key UNIQUE collision
+        (concurrent duplicate request), the transaction is rolled back and the
+        existing run is returned.  Non-idempotency IntegrityErrors are re-raised.
+        """
         self.session.add(model)
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+
+            # Only handle the idempotency-key collision path.
+            if model.idempotency_key is not None:
+                existing = await self.get_by_idempotency_key(model.idempotency_key)
+                if existing is not None:
+                    logger.info(
+                        "Idempotency collision resolved for key=%s, returning existing run_id=%s",
+                        model.idempotency_key,
+                        existing.run_id,
+                    )
+                    return existing
+
+            # Not an idempotency collision — propagate the original error.
+            raise exc
+
         await self.session.refresh(model)
         return model
 

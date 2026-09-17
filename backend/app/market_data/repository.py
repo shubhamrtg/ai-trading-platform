@@ -49,13 +49,24 @@ class CandleRepository:
         result = await self.session.execute(stmt)
         return set(result.scalars().all())
 
+    @staticmethod
+    def _compute_fingerprint(timestamps: list[datetime]) -> str:
+        """Create a deterministic fingerprint based on the canonical ordered timestamps."""
+        import hashlib
+        from datetime import UTC
+        # Normalize to UTC and sort to ensure deterministic hashing
+        normalized = sorted([ts.astimezone(UTC).isoformat() for ts in timestamps])
+        hasher = hashlib.sha256()
+        for ts_str in normalized:
+            hasher.update(ts_str.encode("utf-8"))
+        return hasher.hexdigest()
+
     async def is_range_covered(
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> bool:
         """Check if the requested range is completely covered by a prior successful fetch."""
-        from sqlalchemy import func
         from app.models.market_data import MarketDataCoverageModel
-        
+
         # We need a coverage record that completely encloses the requested range
         stmt = select(MarketDataCoverageModel).where(
             MarketDataCoverageModel.symbol == symbol,
@@ -65,34 +76,55 @@ class CandleRepository:
         )
         result = await self.session.execute(stmt)
         record = result.scalars().first()
-        
+
         if not record:
             return False
-            
-        # Verify macroscopic integrity: The exact requested bounds must have preserved all validated candles.
-        count_stmt = select(func.count(CandleModel.id)).where(
+
+        # Load the authoritative persisted timestamps for the recorded coverage interval
+        ts_stmt = select(CandleModel.timestamp).where(
             CandleModel.symbol == symbol,
             CandleModel.timeframe == timeframe,
             CandleModel.timestamp >= record.start_time,
             CandleModel.timestamp <= record.end_time,
         )
-        db_count = await self.session.scalar(count_stmt)
-        
-        # If the count meets or exceeds expected, the original dataset is fully intact.
-        # This prevents falsely reporting coverage if data was manually deleted or the vendor return was truncated.
-        return db_count is not None and db_count >= record.expected_count
+        ts_result = await self.session.execute(ts_stmt)
+        timestamps = list(ts_result.scalars().all())
+
+        # Calculate actual count
+        actual_count = len(timestamps)
+
+        # Calculate timestamp fingerprint
+        fingerprint = self._compute_fingerprint(timestamps)
+
+        # Compare with stored coverage metadata
+        return actual_count == record.actual_count and fingerprint == record.timestamp_fingerprint
 
     async def mark_range_covered(
-        self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime, expected_count: int
+        self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> None:
-        """Mark a range as covered after a successful fetch, storing the expected candle count."""
+        """Mark a range as covered after a successful fetch, storing the authoritative timestamp fingerprint."""
         from app.models.market_data import MarketDataCoverageModel
+
+        # Read the authoritative persisted candles for the coverage range
+        ts_stmt = select(CandleModel.timestamp).where(
+            CandleModel.symbol == symbol,
+            CandleModel.timeframe == timeframe,
+            CandleModel.timestamp >= start_time,
+            CandleModel.timestamp <= end_time,
+        )
+        ts_result = await self.session.execute(ts_stmt)
+        timestamps = list(ts_result.scalars().all())
+
+        actual_count = len(timestamps)
+        fingerprint = self._compute_fingerprint(timestamps)
+
         coverage = MarketDataCoverageModel(
             symbol=symbol,
             timeframe=timeframe,
             start_time=start_time,
             end_time=end_time,
-            expected_count=expected_count,
+            actual_count=actual_count,
+            timestamp_fingerprint=fingerprint,
         )
         self.session.add(coverage)
         try:
@@ -113,14 +145,14 @@ class CandleRepository:
                 await self.session.commit()
             except IntegrityError as e:
                 await self.session.rollback()
-                
+
                 is_expected = False
                 if dialect_name == "postgresql":
                     # For PostgreSQL (asyncpg/psycopg)
-                    if hasattr(e.orig, "sqlstate") and getattr(e.orig, "sqlstate") == "23505":
-                        if hasattr(e.orig, "constraint_name") and getattr(e.orig, "constraint_name") == "uq_candle_identity":
+                    if hasattr(e.orig, "sqlstate") and e.orig.sqlstate == "23505":
+                        if hasattr(e.orig, "constraint_name") and e.orig.constraint_name == "uq_candle_identity":
                             is_expected = True
-                    if hasattr(e.orig, "pgcode") and getattr(e.orig, "pgcode") == "23505":
+                    if hasattr(e.orig, "pgcode") and e.orig.pgcode == "23505":
                         if "uq_candle_identity" in str(e.orig):
                             is_expected = True
                     # Fallback for some drivers where it's in the message

@@ -96,7 +96,7 @@ class YahooFinanceClient(HistoricalVendorClient):
         try:
             # We use Any here to bypass strictly typed dictionary accesses since Yahoo responses are heavily nested
             from typing import Any, cast
-            data_any = cast(Any, data)
+            data_any = cast("Any", data)
             result = data_any["chart"]["result"]
             if not result:
                 raise DataIntegrityError(f"Vendor response 'result' is empty for {symbol}")

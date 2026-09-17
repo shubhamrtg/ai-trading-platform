@@ -321,7 +321,6 @@ async def test_immutable_cache(
     repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
 ):
     t1 = datetime(2023, 1, 1, tzinfo=UTC)
-    t2 = datetime(2023, 1, 5, tzinfo=UTC)
 
     vendor.candles_to_return = [make_candle("BTC", t1)]
     _ = [c async for c in service.get_candles("BTC", "1d", t1, t1)]
@@ -339,3 +338,44 @@ async def test_immutable_cache(
     _ = [c async for c in service.get_candles("BTC", "1d", t1, t1)]
     candles = await repo.get_candles("BTC", "1d", t1, t1)
     assert candles[0].close == Decimal("105")  # Unchanged
+
+
+@pytest.mark.asyncio
+async def test_coverage_fingerprint_corruption(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    from app.models.market_data import CandleModel
+    from sqlalchemy import delete
+
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 2, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+
+    # 1. Fetch T1, T2, T3
+    vendor.candles_to_return = [
+        make_candle("BTC", t1),
+        make_candle("BTC", t2),
+        make_candle("BTC", t3),
+    ]
+    _ = [c async for c in service.get_candles("BTC", "1d", t1, t3)]
+    assert await repo.is_range_covered("BTC", "1d", t1, t3) is True
+
+    # 2. Simulate count-preserving DB corruption (delete T2, insert T4)
+    t4 = datetime(2023, 1, 4, tzinfo=UTC)
+    await repo.session.execute(delete(CandleModel).where(CandleModel.timestamp == t2))
+
+    c4 = CandleModel(
+        symbol="BTC",
+        timeframe="1d",
+        timestamp=t4,
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        volume=Decimal("1000"),
+    )
+    repo.session.add(c4)
+    await repo.session.commit()
+
+    # 3. Count is still 3, but fingerprint should mismatch and fail coverage
+    assert await repo.is_range_covered("BTC", "1d", t1, t3) is False

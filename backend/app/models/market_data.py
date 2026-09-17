@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Numeric, String, UniqueConstraint, Integer
+from sqlalchemy import DateTime, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -38,5 +38,6 @@ class MarketDataCoverageModel(Base):
     timeframe: Mapped[str] = mapped_column(String, nullable=False, index=True)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
 

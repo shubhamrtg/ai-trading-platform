@@ -115,5 +115,5 @@ class MarketDataService(MarketDataProvider):
                 await self.repository.insert_missing(new_models)
 
             # After a successful fetch and persist, explicitly record that this range is now covered
-            # We record the total number of valid candles returned by the vendor to verify macroscopic integrity later.
-            await self.repository.mark_range_covered(symbol, timeframe, start_time, end_time, len(vendor_candles))
+            # We record the authoritative timestamp fingerprint to verify dataset integrity later.
+            await self.repository.mark_range_covered(symbol, timeframe, start_time, end_time)

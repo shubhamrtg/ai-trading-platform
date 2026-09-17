@@ -419,3 +419,46 @@ def test_determinism_timestamp_changes_identity(
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
     
     assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_none_versus_zero(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    
+    sig1 = base_signal.model_copy(update={"proposed_entry_price": None})
+    sig2 = base_signal.model_copy(update={"proposed_entry_price": Decimal("0.0")})
+    
+    dec1 = engine.evaluate(sig1, base_context, base_policy)
+    dec2 = engine.evaluate(sig2, base_context, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_string_delimiter_safety(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    
+    # We can inject delimiter characters into string fields like strategy_id or version
+    # Since we are using JSON with strict schemas now, `strategy_id="A|B", strategy_version="C"`
+    # should be fundamentally distinct from `strategy_id="A", strategy_version="B|C"`
+    sig1 = base_signal.model_copy(update={"strategy_id": "A|B", "strategy_version": "C"})
+    sig2 = base_signal.model_copy(update={"strategy_id": "A", "strategy_version": "B|C"})
+    
+    dec1 = engine.evaluate(sig1, base_context, base_policy)
+    dec2 = engine.evaluate(sig2, base_context, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_decimal_representation_safety(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    
+    ctx1 = base_context.model_copy(update={"current_exposure": Decimal("100.00")})
+    ctx2 = base_context.model_copy(update={"current_exposure": Decimal("100.01")})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+

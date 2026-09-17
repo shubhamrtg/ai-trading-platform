@@ -17,36 +17,46 @@ class RiskEngine:
     """Core deterministic risk evaluation engine."""
 
 
+
     def _generate_decision_id(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> uuid.UUID:
         """Generate a deterministic UUID representing the exact evaluation state."""
-        parts = [
-            str(signal.signal_id),
-            str(signal.correlation_id),
-            str(signal.side.value),
-            str(signal.quantity),
-            str(signal.proposed_entry_price) if signal.proposed_entry_price else "None",
-            str(signal.stop_loss) if signal.stop_loss else "None",
-            str(signal.strategy_id),
-            str(signal.strategy_version),
-            str(context.portfolio_equity),
-            str(context.current_position),
-            str(context.current_exposure),
-            str(context.daily_pnl),
-            str(context.peak_equity),
-            str(context.current_equity),
-            str(context.trading_halted),
-            context.evaluated_at.isoformat(),
-            policy.version,
-            str(policy.max_order_quantity),
-            str(policy.max_position_quantity),
-            str(policy.max_exposure_amount),
-            str(policy.max_exposure_percent),
-            str(policy.max_risk_per_trade),
-            str(policy.max_daily_loss),
-            str(policy.max_drawdown_percent),
-            str(policy.trading_halted),
-        ]
-        canonical_string = "|".join(parts)
+        import json
+        
+        state = {
+            "signal": {
+                "signal_id": str(signal.signal_id),
+                "correlation_id": str(signal.correlation_id),
+                "side": signal.side.value,
+                "quantity": str(signal.quantity),
+                "proposed_entry_price": str(signal.proposed_entry_price) if signal.proposed_entry_price is not None else None,
+                "stop_loss": str(signal.stop_loss) if signal.stop_loss is not None else None,
+                "strategy_id": str(signal.strategy_id) if signal.strategy_id is not None else None,
+                "strategy_version": str(signal.strategy_version) if signal.strategy_version is not None else None,
+            },
+            "context": {
+                "portfolio_equity": str(context.portfolio_equity),
+                "current_position": str(context.current_position),
+                "current_exposure": str(context.current_exposure),
+                "daily_pnl": str(context.daily_pnl),
+                "peak_equity": str(context.peak_equity),
+                "current_equity": str(context.current_equity),
+                "trading_halted": context.trading_halted,
+                "evaluated_at": context.evaluated_at.isoformat(),
+            },
+            "policy": {
+                "version": policy.version,
+                "max_order_quantity": str(policy.max_order_quantity),
+                "max_position_quantity": str(policy.max_position_quantity),
+                "max_exposure_amount": str(policy.max_exposure_amount),
+                "max_exposure_percent": str(policy.max_exposure_percent),
+                "max_risk_per_trade": str(policy.max_risk_per_trade),
+                "max_daily_loss": str(policy.max_daily_loss),
+                "max_drawdown_percent": str(policy.max_drawdown_percent),
+                "trading_halted": policy.trading_halted,
+            }
+        }
+        
+        canonical_string = json.dumps(state, sort_keys=True, separators=(',', ':'))
         return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
     def evaluate(

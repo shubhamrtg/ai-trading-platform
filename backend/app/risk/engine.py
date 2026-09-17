@@ -16,6 +16,39 @@ from app.schemas.signal import Signal
 class RiskEngine:
     """Core deterministic risk evaluation engine."""
 
+
+    def _generate_decision_id(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> uuid.UUID:
+        """Generate a deterministic UUID representing the exact evaluation state."""
+        parts = [
+            str(signal.signal_id),
+            str(signal.correlation_id),
+            str(signal.side.value),
+            str(signal.quantity),
+            str(signal.proposed_entry_price) if signal.proposed_entry_price else "None",
+            str(signal.stop_loss) if signal.stop_loss else "None",
+            str(signal.strategy_id),
+            str(signal.strategy_version),
+            str(context.portfolio_equity),
+            str(context.current_position),
+            str(context.current_exposure),
+            str(context.daily_pnl),
+            str(context.peak_equity),
+            str(context.current_equity),
+            str(context.trading_halted),
+            context.evaluated_at.isoformat(),
+            policy.version,
+            str(policy.max_order_quantity),
+            str(policy.max_position_quantity),
+            str(policy.max_exposure_amount),
+            str(policy.max_exposure_percent),
+            str(policy.max_risk_per_trade),
+            str(policy.max_daily_loss),
+            str(policy.max_drawdown_percent),
+            str(policy.trading_halted),
+        ]
+        canonical_string = "|".join(parts)
+        return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
+
     def evaluate(
         self, signal: Signal, context: RiskContext, policy: RiskPolicy
     ) -> RiskDecision:
@@ -132,10 +165,7 @@ class RiskEngine:
                 
         # Deterministic Decision ID Generation
         # Use UUID5 based on stable inputs
-        deterministic_id = uuid.uuid5(
-            uuid.NAMESPACE_OID, 
-            f"{signal.signal_id}-{policy.version}-{context.evaluated_at.isoformat()}"
-        )
+        deterministic_id = self._generate_decision_id(signal, context, policy)
 
         if rejection_codes:
             return RiskDecision(

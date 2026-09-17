@@ -344,3 +344,78 @@ def test_architectural_no_execution_dependency() -> None:
     assert "broker" not in source.lower()
     assert "execute" not in source.lower() # no execution
     assert " import ai" not in source.lower()
+
+
+def test_determinism_exposure_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    ctx1 = base_context.model_copy(update={"current_exposure": Decimal("10000.0")})
+    ctx2 = base_context.model_copy(update={"current_exposure": Decimal("20000.0")})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_portfolio_equity_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    ctx1 = base_context.model_copy(update={"portfolio_equity": Decimal("100000.0")})
+    ctx2 = base_context.model_copy(update={"portfolio_equity": Decimal("200000.0")})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_daily_pnl_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    ctx1 = base_context.model_copy(update={"daily_pnl": Decimal("100.0")})
+    ctx2 = base_context.model_copy(update={"daily_pnl": Decimal("-100.0")})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_position_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    ctx1 = base_context.model_copy(update={"current_position": Decimal("10.0")})
+    ctx2 = base_context.model_copy(update={"current_position": Decimal("20.0")})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_policy_configuration_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    engine = RiskEngine()
+    # Keep version same, change exposure amount
+    pol1 = base_policy.model_copy(update={"max_exposure_amount": Decimal("10000.0")})
+    pol2 = base_policy.model_copy(update={"max_exposure_amount": Decimal("20000.0")})
+    
+    dec1 = engine.evaluate(base_signal, base_context, pol1)
+    dec2 = engine.evaluate(base_signal, base_context, pol2)
+    
+    assert dec1.decision_id != dec2.decision_id
+
+def test_determinism_timestamp_changes_identity(
+    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
+) -> None:
+    from datetime import timedelta
+    engine = RiskEngine()
+    ctx1 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at})
+    ctx2 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at + timedelta(seconds=1)})
+    
+    dec1 = engine.evaluate(base_signal, ctx1, base_policy)
+    dec2 = engine.evaluate(base_signal, ctx2, base_policy)
+    
+    assert dec1.decision_id != dec2.decision_id

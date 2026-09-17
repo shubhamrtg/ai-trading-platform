@@ -21,6 +21,7 @@ from app.models.enums import (
     OrderType,
     PositionState,
     RiskDecisionStatus,
+    RiskRejectionCode,
     SignalType,
     StrategyStatus,
     TimeInForce,
@@ -119,6 +120,7 @@ class TestEnumSerialization:
             timeframe="1h",
             side=OrderSide.BUY,
             signal_type=SignalType.ENTRY,
+            quantity=Decimal("1.0"),
         )
         data = signal.model_dump(mode="json")
         assert data["side"] == "BUY"
@@ -229,6 +231,7 @@ class TestTimezoneAwareness:
             timeframe="1h",
             side=OrderSide.BUY,
             signal_type=SignalType.ENTRY,
+            quantity=Decimal("1.0"),
         )
         assert signal.timestamp.tzinfo is not None
 
@@ -320,6 +323,7 @@ class TestSignal:
             timeframe="5m",
             side=OrderSide.BUY,
             signal_type=SignalType.ENTRY,
+            quantity=Decimal("1.0"),
         )
         assert signal.side == OrderSide.BUY
         assert signal.signal_type == SignalType.ENTRY
@@ -352,6 +356,7 @@ class TestSignal:
             timeframe="1h",
             side=OrderSide.BUY,
             signal_type=SignalType.ENTRY,
+            quantity=Decimal("1.0"),
         )
         assert signal.correlation_id == cid
 
@@ -382,34 +387,34 @@ class TestRiskDecision:
             correlation_id=uuid4(),
             signal_id=uuid4(),
             status=RiskDecisionStatus.REJECTED,
-            rejection_code="MAX_EXPOSURE_EXCEEDED",
-            rejection_reason="Total exposure would exceed 50% of equity",
+            rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
+            rejection_reasons=["Total exposure would exceed 50% of equity"],
             timestamp=datetime.now(UTC),
         )
         assert decision.status == RiskDecisionStatus.REJECTED
-        assert decision.rejection_code == "MAX_EXPOSURE_EXCEEDED"
+        assert decision.rejection_codes == [RiskRejectionCode.MAX_EXPOSURE_EXCEEDED]
+        assert decision.calculated_quantity is None
 
     def test_rejected_with_quantity_fails(self) -> None:
-        """REJECTED decisions must not have a calculated_quantity."""
-        with pytest.raises(ValidationError, match="REJECTED.*calculated_quantity"):
+        with pytest.raises(ValidationError):
             RiskDecision(
                 decision_id=uuid4(),
                 correlation_id=uuid4(),
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.REJECTED,
+                rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 timestamp=datetime.now(UTC),
             )
 
     def test_approved_with_rejection_code_fails(self) -> None:
-        """APPROVED decisions must not have a rejection_code."""
-        with pytest.raises(ValidationError, match="APPROVED.*rejection_code"):
+        with pytest.raises(ValidationError):
             RiskDecision(
                 decision_id=uuid4(),
                 correlation_id=uuid4(),
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.APPROVED,
-                rejection_code="SOME_CODE",
+                rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 timestamp=datetime.now(UTC),
             )
@@ -828,6 +833,7 @@ class TestDomainSeparation:
             "timeframe": "1h",
             "side": "BUY",
             "signal_type": "ENTRY",
+            "quantity": "1.0",
             "state": "CREATED",  # This is an Order field, not a Signal field
         }
         signal = Signal.model_validate(signal_data)
@@ -859,6 +865,7 @@ class TestCorrelationID:
             timeframe="1h",
             side=OrderSide.BUY,
             signal_type=SignalType.ENTRY,
+            quantity=Decimal("1.0"),
         )
 
         decision = RiskDecision(

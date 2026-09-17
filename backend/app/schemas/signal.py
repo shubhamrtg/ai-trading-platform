@@ -32,6 +32,7 @@ class Signal(BaseModel):
 
     side: OrderSide = Field(..., description="BUY or SELL")
     signal_type: SignalType = Field(..., description="ENTRY or EXIT")
+    quantity: Decimal = Field(..., gt=0, description="Proposed quantity to trade")
 
     # Strategy's proposed parameters (subject to Risk Engine modification)
     proposed_entry_price: Decimal | None = Field(

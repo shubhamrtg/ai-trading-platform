@@ -84,6 +84,7 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 timeframe=candle.timeframe,
                 side=OrderSide.BUY,
                 signal_type=SignalType.ENTRY,
+                quantity=Decimal("1.0"),
                 confidence=0.8,
                 rationale="Fast MA crossed above Slow MA",
             )
@@ -96,6 +97,7 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 timeframe=candle.timeframe,
                 side=OrderSide.SELL,
                 signal_type=SignalType.ENTRY,  # Simplified: just an entry
+                quantity=Decimal("1.0"),
                 confidence=0.8,
                 rationale="Fast MA crossed below Slow MA",
             )

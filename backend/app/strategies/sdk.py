@@ -32,6 +32,7 @@ class SignalDraft(BaseModel):
     timeframe: str
     side: OrderSide
     signal_type: SignalType
+    quantity: Decimal = Field(..., gt=0)
     proposed_entry_price: Decimal | None = None
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None

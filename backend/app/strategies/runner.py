@@ -128,6 +128,7 @@ class StrategyRunner:
                 timeframe=draft.timeframe,
                 side=draft.side,
                 signal_type=draft.signal_type,
+                quantity=draft.quantity,
                 proposed_entry_price=draft.proposed_entry_price,
                 stop_loss=draft.stop_loss,
                 take_profit=draft.take_profit,

@@ -28,6 +28,7 @@ class RiskDecision(BaseModel):
     signal_id: UUID = Field(..., description="The signal being evaluated")
 
     status: RiskDecisionStatus = Field(..., description="APPROVED, REJECTED, or MODIFIED")
+    risk_policy_version: str = Field(..., description="Version of the RiskPolicy used")
 
     # If REJECTED, why?
     rejection_codes: list[RiskRejectionCode] = Field(

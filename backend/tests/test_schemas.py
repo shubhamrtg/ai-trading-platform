@@ -375,6 +375,7 @@ class TestRiskDecision:
             correlation_id=uuid4(),
             signal_id=uuid4(),
             status=RiskDecisionStatus.APPROVED,
+            risk_policy_version="1.0.0",
             calculated_quantity=Decimal("1.5"),
             timestamp=datetime.now(UTC),
         )
@@ -387,6 +388,7 @@ class TestRiskDecision:
             correlation_id=uuid4(),
             signal_id=uuid4(),
             status=RiskDecisionStatus.REJECTED,
+            risk_policy_version="1.0.0",
             rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
             rejection_reasons=["Total exposure would exceed 50% of equity"],
             timestamp=datetime.now(UTC),
@@ -402,8 +404,11 @@ class TestRiskDecision:
                 correlation_id=uuid4(),
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.REJECTED,
+                risk_policy_version="1.0.0",
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
+                calculated_risk=None,
+                risk_limit_applied=None,
                 timestamp=datetime.now(UTC),
             )
 
@@ -414,6 +419,7 @@ class TestRiskDecision:
                 correlation_id=uuid4(),
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.APPROVED,
+                risk_policy_version="1.0.0",
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 timestamp=datetime.now(UTC),
@@ -425,6 +431,7 @@ class TestRiskDecision:
             correlation_id=uuid4(),
             signal_id=uuid4(),
             status=RiskDecisionStatus.MODIFIED,
+            risk_policy_version="1.0.0",
             calculated_quantity=Decimal("0.5"),
             risk_limit_applied="MAX_POSITION_SIZE",
             timestamp=datetime.now(UTC),
@@ -873,6 +880,7 @@ class TestCorrelationID:
             correlation_id=corr_id,
             signal_id=sig_id,
             status=RiskDecisionStatus.APPROVED,
+            risk_policy_version="1.0.0",
             calculated_quantity=Decimal("1.0"),
             timestamp=datetime.now(UTC),
         )

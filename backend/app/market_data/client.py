@@ -85,7 +85,7 @@ class YahooFinanceClient(HistoricalVendorClient):
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 # Yahoo returns 404 for missing symbols
-                return []
+                raise DataIntegrityError(f"Symbol {symbol} not found on Yahoo Finance (404)")
             raise ProviderUnavailableError(f"Yahoo Finance returned error: {e.response.status_code}") from e
         except httpx.RequestError as e:
             raise ProviderUnavailableError(f"Failed to connect to Yahoo Finance: {e}") from e
@@ -99,13 +99,12 @@ class YahooFinanceClient(HistoricalVendorClient):
             data_any = cast(Any, data)
             result = data_any["chart"]["result"]
             if not result:
-                return []
+                raise DataIntegrityError(f"Vendor response 'result' is empty for {symbol}")
 
             chart_data = result[0]
 
-            # If timestamp array is missing, there's no data
-            if "timestamp" not in chart_data:
-                return []
+            if "timestamp" not in chart_data or not chart_data["timestamp"]:
+                raise DataIntegrityError(f"Vendor response is missing the timestamp array for {symbol}")
 
             timestamps = chart_data["timestamp"]
             indicators = chart_data["indicators"]["quote"][0]

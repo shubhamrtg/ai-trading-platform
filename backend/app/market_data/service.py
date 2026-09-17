@@ -5,7 +5,7 @@ from datetime import datetime
 
 from app.backtesting.provider import MarketDataProvider
 from app.market_data.client import HistoricalVendorClient
-from app.market_data.exceptions import ChronologyError
+from app.market_data.exceptions import ChronologyError, DataIntegrityError
 from app.market_data.repository import CandleRepository
 from app.models.market_data import CandleModel
 from app.schemas.market_data import Candle
@@ -79,7 +79,7 @@ class MarketDataService(MarketDataProvider):
             }
 
             if not vendor_candles:
-                return
+                raise DataIntegrityError(f"Vendor provided insufficient/empty data to establish coverage for {symbol} between {start_time} and {end_time}")
 
             # Filter and validate
             new_models = []
@@ -115,4 +115,5 @@ class MarketDataService(MarketDataProvider):
                 await self.repository.insert_missing(new_models)
 
             # After a successful fetch and persist, explicitly record that this range is now covered
-            await self.repository.mark_range_covered(symbol, timeframe, start_time, end_time)
+            # We record the total number of valid candles returned by the vendor to verify macroscopic integrity later.
+            await self.repository.mark_range_covered(symbol, timeframe, start_time, end_time, len(vendor_candles))

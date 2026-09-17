@@ -185,7 +185,7 @@ async def test_malformed_vendor_data(vendor: MockVendorClient):
     client = YahooFinanceClient()
 
     # 1. Missing timestamp
-    data = {
+    data: dict[str, object] = {
         "chart": {
             "result": [
                 {
@@ -198,9 +198,8 @@ async def test_malformed_vendor_data(vendor: MockVendorClient):
             ]
         }
     }
-    assert (
-        client._parse_yahoo_response("BTC", "1d", data) == []
-    )  # handled naturally if no timestamp array
+    with pytest.raises(DataIntegrityError, match="missing the timestamp array"):
+        client._parse_yahoo_response("BTC", "1d", data)
 
     # 2. Null price
     data = {
@@ -276,3 +275,67 @@ async def test_unexpected_integrity_error(repo: CandleRepository):
 
     with pytest.raises(IntegrityError):
         await repo.insert_missing([c1])
+
+
+@pytest.mark.asyncio
+async def test_coverage_macroscopic_integrity(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 5, tzinfo=UTC)
+
+    vendor.candles_to_return = [make_candle("BTC", t1), make_candle("BTC", t2)]
+    # 1. Fetch, should insert and mark covered
+    _ = [c async for c in service.get_candles("BTC", "1d", t1, t2)]
+    assert await repo.is_range_covered("BTC", "1d", t1, t2) is True
+
+    # 2. Manually delete a candle to simulate tampering/corruption
+    from app.models.market_data import CandleModel
+    from sqlalchemy import delete
+
+    await repo.session.execute(delete(CandleModel).where(CandleModel.timestamp == t1))
+    await repo.session.commit()
+
+    # 3. Should no longer be considered covered because macroscopic integrity (count) failed
+    assert await repo.is_range_covered("BTC", "1d", t1, t2) is False
+
+
+@pytest.mark.asyncio
+async def test_insufficient_vendor_data_raises(
+    service: MarketDataService, vendor: MockVendorClient
+):
+    from app.market_data.exceptions import DataIntegrityError
+
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 5, tzinfo=UTC)
+
+    # Vendor returns empty (insufficient data)
+    vendor.candles_to_return = []
+
+    with pytest.raises(DataIntegrityError, match="insufficient/empty data"):
+        _ = [c async for c in service.get_candles("BTC", "1d", t1, t2)]
+
+
+@pytest.mark.asyncio
+async def test_immutable_cache(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 5, tzinfo=UTC)
+
+    vendor.candles_to_return = [make_candle("BTC", t1)]
+    _ = [c async for c in service.get_candles("BTC", "1d", t1, t1)]
+
+    # Make sure we have 105 close
+    candles = await repo.get_candles("BTC", "1d", t1, t1)
+    assert candles[0].close == Decimal("105")
+
+    # Vendor returns changed data
+    changed = make_candle("BTC", t1)
+    changed.close = Decimal("999")
+    vendor.candles_to_return = [changed]
+
+    # Should not overwrite
+    _ = [c async for c in service.get_candles("BTC", "1d", t1, t1)]
+    candles = await repo.get_candles("BTC", "1d", t1, t1)
+    assert candles[0].close == Decimal("105")  # Unchanged

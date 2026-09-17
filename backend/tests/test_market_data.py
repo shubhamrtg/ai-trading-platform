@@ -379,3 +379,93 @@ async def test_coverage_fingerprint_corruption(
 
     # 3. Count is still 3, but fingerprint should mismatch and fail coverage
     assert await repo.is_range_covered("BTC", "1d", t1, t3) is False
+
+@pytest.mark.asyncio
+async def test_vendor_response_truncated_at_beginning(
+    service: MarketDataService, vendor: MockVendorClient, repo: CandleRepository
+):
+    from app.market_data.exceptions import DataIntegrityError
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+    t5 = datetime(2023, 1, 5, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t3), make_candle('BTC', t5)]
+    with pytest.raises(DataIntegrityError, match='persisted boundaries do not span the requested range'):
+        _ = [c async for c in service.get_candles('BTC', '1d', t1, t5)]
+    assert await repo.is_range_covered('BTC', '1d', t1, t5) is False
+
+@pytest.mark.asyncio
+async def test_vendor_response_truncated_at_end(
+    service: MarketDataService, vendor: MockVendorClient, repo: CandleRepository
+):
+    from app.market_data.exceptions import DataIntegrityError
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+    t5 = datetime(2023, 1, 5, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t1), make_candle('BTC', t3)]
+    with pytest.raises(DataIntegrityError, match='persisted boundaries do not span the requested range'):
+        _ = [c async for c in service.get_candles('BTC', '1d', t1, t5)]
+    assert await repo.is_range_covered('BTC', '1d', t1, t5) is False
+
+@pytest.mark.asyncio
+async def test_vendor_response_middle_subset(
+    service: MarketDataService, vendor: MockVendorClient, repo: CandleRepository
+):
+    from app.market_data.exceptions import DataIntegrityError
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+    t7 = datetime(2023, 1, 7, tzinfo=UTC)
+    t10 = datetime(2023, 1, 10, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t3), make_candle('BTC', t7)]
+    with pytest.raises(DataIntegrityError, match='persisted boundaries do not span the requested range'):
+        _ = [c async for c in service.get_candles('BTC', '1d', t1, t10)]
+    assert await repo.is_range_covered('BTC', '1d', t1, t10) is False
+
+@pytest.mark.asyncio
+async def test_timestamp_deletion_invalidates_coverage(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    from app.models.market_data import CandleModel
+    from sqlalchemy import delete
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 2, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t1), make_candle('BTC', t2), make_candle('BTC', t3)]
+    _ = [c async for c in service.get_candles('BTC', '1d', t1, t3)]
+    assert await repo.is_range_covered('BTC', '1d', t1, t3) is True
+    await repo.session.execute(delete(CandleModel).where(CandleModel.timestamp == t2))
+    await repo.session.commit()
+    assert await repo.is_range_covered('BTC', '1d', t1, t3) is False
+
+@pytest.mark.asyncio
+async def test_boundary_corruption_invalidates_coverage(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    from app.models.market_data import CandleModel
+    from sqlalchemy import delete
+    t1 = datetime(2023, 1, 1, tzinfo=UTC)
+    t2 = datetime(2023, 1, 2, tzinfo=UTC)
+    t3 = datetime(2023, 1, 3, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t1), make_candle('BTC', t2), make_candle('BTC', t3)]
+    _ = [c async for c in service.get_candles('BTC', '1d', t1, t3)]
+    await repo.session.execute(delete(CandleModel).where(CandleModel.timestamp == t1))
+    await repo.session.commit()
+    assert await repo.is_range_covered('BTC', '1d', t1, t3) is False
+    c1_model = CandleModel(
+        symbol='BTC', timeframe='1d', timestamp=t1,
+        open=Decimal('100'), high=Decimal('110'), low=Decimal('90'), close=Decimal('105'), volume=Decimal('1000')
+    )
+    repo.session.add(c1_model)
+    await repo.session.execute(delete(CandleModel).where(CandleModel.timestamp == t3))
+    await repo.session.commit()
+    assert await repo.is_range_covered('BTC', '1d', t1, t3) is False
+
+@pytest.mark.asyncio
+async def test_legitimate_market_gap(
+    repo: CandleRepository, service: MarketDataService, vendor: MockVendorClient
+):
+    t_friday = datetime(2023, 1, 6, tzinfo=UTC)
+    t_monday = datetime(2023, 1, 9, tzinfo=UTC)
+    vendor.candles_to_return = [make_candle('BTC', t_friday), make_candle('BTC', t_monday)]
+    _ = [c async for c in service.get_candles('BTC', '1d', t_friday, t_monday)]
+    assert await repo.is_range_covered('BTC', '1d', t_friday, t_monday) is True
+

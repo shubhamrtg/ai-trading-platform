@@ -66,13 +66,22 @@ class CandleRepository:
     ) -> bool:
         """Check if the requested range is completely covered by a prior successful fetch."""
         from app.models.market_data import MarketDataCoverageModel
+        from datetime import UTC
 
         # We need a coverage record that completely encloses the requested range
-        stmt = select(MarketDataCoverageModel).where(
-            MarketDataCoverageModel.symbol == symbol,
-            MarketDataCoverageModel.timeframe == timeframe,
-            MarketDataCoverageModel.start_time <= start_time,
-            MarketDataCoverageModel.end_time >= end_time,
+        # Select deterministically: shortest enclosing interval first
+        stmt = (
+            select(MarketDataCoverageModel)
+            .where(
+                MarketDataCoverageModel.symbol == symbol,
+                MarketDataCoverageModel.timeframe == timeframe,
+                MarketDataCoverageModel.start_time <= start_time,
+                MarketDataCoverageModel.end_time >= end_time,
+            )
+            .order_by(
+                MarketDataCoverageModel.start_time.desc(),
+                MarketDataCoverageModel.end_time.asc()
+            )
         )
         result = await self.session.execute(stmt)
         record = result.scalars().first()
@@ -90,6 +99,28 @@ class CandleRepository:
         ts_result = await self.session.execute(ts_stmt)
         timestamps = list(ts_result.scalars().all())
 
+        if not timestamps:
+            return False
+
+        min_ts = min(timestamps)
+        max_ts = max(timestamps)
+
+        if min_ts.tzinfo is None:
+            min_ts = min_ts.replace(tzinfo=UTC)
+        if max_ts.tzinfo is None:
+            max_ts = max_ts.replace(tzinfo=UTC)
+            
+        rec_start = record.start_time
+        rec_end = record.end_time
+        if rec_start.tzinfo is None:
+            rec_start = rec_start.replace(tzinfo=UTC)
+        if rec_end.tzinfo is None:
+            rec_end = rec_end.replace(tzinfo=UTC)
+
+        # Condition 2: Persisted dataset must still establish coverage boundaries
+        if min_ts > rec_start or max_ts < rec_end:
+            return False
+
         # Calculate actual count
         actual_count = len(timestamps)
 
@@ -104,6 +135,7 @@ class CandleRepository:
     ) -> None:
         """Mark a range as covered after a successful fetch, storing the authoritative timestamp fingerprint."""
         from app.models.market_data import MarketDataCoverageModel
+        from datetime import UTC
 
         # Read the authoritative persisted candles for the coverage range
         ts_stmt = select(CandleModel.timestamp).where(
@@ -114,6 +146,26 @@ class CandleRepository:
         )
         ts_result = await self.session.execute(ts_stmt)
         timestamps = list(ts_result.scalars().all())
+
+        if not timestamps:
+            from app.market_data.exceptions import DataIntegrityError
+            raise DataIntegrityError("Cannot mark range covered: no persisted timestamps found.")
+
+        min_ts = min(timestamps)
+        max_ts = max(timestamps)
+
+        if min_ts.tzinfo is None:
+            min_ts = min_ts.replace(tzinfo=UTC)
+        if max_ts.tzinfo is None:
+            max_ts = max_ts.replace(tzinfo=UTC)
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=UTC)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=UTC)
+
+        if min_ts > start_time or max_ts < end_time:
+            from app.market_data.exceptions import DataIntegrityError
+            raise DataIntegrityError("Cannot mark range covered: persisted boundaries do not span the requested range.")
 
         actual_count = len(timestamps)
         fingerprint = self._compute_fingerprint(timestamps)
@@ -148,19 +200,20 @@ class CandleRepository:
 
                 is_expected = False
                 if dialect_name == "postgresql":
-                    # For PostgreSQL (asyncpg/psycopg)
-                    if hasattr(e.orig, "sqlstate") and e.orig.sqlstate == "23505":
-                        if hasattr(e.orig, "constraint_name") and e.orig.constraint_name == "uq_candle_identity":
+                    if hasattr(e, "orig") and e.orig is not None:
+                        # Check for specific unique constraint violation code and constraint name
+                        # postgresql uses sqlstate 23505 for unique violation
+                        if getattr(e.orig, "sqlstate", None) == "23505" and getattr(e.orig, "constraint_name", None) == "uq_candle_identity":
                             is_expected = True
-                    if hasattr(e.orig, "pgcode") and e.orig.pgcode == "23505":
-                        if "uq_candle_identity" in str(e.orig):
+                        # Sometimes it is under pgcode
+                        if getattr(e.orig, "pgcode", None) == "23505" and "uq_candle_identity" in str(e.orig):
                             is_expected = True
                     # Fallback for some drivers where it's in the message
-                    if "duplicate key value violates unique constraint" in str(e.orig) and "uq_candle_identity" in str(e.orig):
+                    if hasattr(e, "orig") and e.orig is not None and "duplicate key value violates unique constraint" in str(e.orig) and "uq_candle_identity" in str(e.orig):
                         is_expected = True
                 else:
                     # For SQLite
-                    err_str = str(e.orig).lower() if e.orig else str(e).lower()
+                    err_str = str(e.orig).lower() if hasattr(e, "orig") and e.orig else str(e).lower()
                     if "unique constraint failed" in err_str:
                         # SQLite explicitly names the columns or constraint
                         if "uq_candle_identity" in err_str or ("symbol" in err_str and "timestamp" in err_str):

@@ -52,6 +52,18 @@ class OrderIntent(BaseModel):
 
     idempotency_key: str = Field(..., description="Strict key to prevent duplicate execution")
     creation_timestamp: datetime = Field(..., description="UTC time created")
+    
+    # Traceability additions
+    risk_policy_version: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    trading_mode: str | None = None
+    
+    # Traceability additions
+    risk_policy_version: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    trading_mode: str | None = None
 
     @model_validator(mode="after")
     def validate_price_requirements(self) -> "OrderIntent":

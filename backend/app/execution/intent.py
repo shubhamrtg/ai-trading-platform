@@ -37,7 +37,7 @@ def build_order_intent(
     signal: Signal,
     decision: RiskDecision,
     account_id: str,
-    requested_trading_mode: str | None = None,
+    trading_mode: str,
 ) -> OrderIntent:
     """Safely convert an approved RiskDecision into an OrderIntent.
     
@@ -49,11 +49,18 @@ def build_order_intent(
         raise OrderIntentLineageError("Mismatched signal_id between RiskDecision and Signal.")
     if decision.correlation_id != signal.correlation_id:
         raise OrderIntentLineageError("Mismatched correlation_id between RiskDecision and Signal.")
+        
+    if hasattr(decision, "strategy_id") and hasattr(signal, "strategy_id"):
+        if getattr(decision, "strategy_id") != getattr(signal, "strategy_id"):
+            raise OrderIntentLineageError("Mismatched strategy_id between RiskDecision and Signal.")
+    if hasattr(decision, "strategy_version") and hasattr(signal, "strategy_version"):
+        if getattr(decision, "strategy_version") != getattr(signal, "strategy_version"):
+            raise OrderIntentLineageError("Mismatched strategy_version between RiskDecision and Signal.")
 
     # 2. Approval Gate
     if decision.status != RiskDecisionStatus.APPROVED:
         raise RejectedRiskDecisionError(f"Cannot create OrderIntent from {decision.status.value} decision.")
-
+        
     # 3. Quantity Authority
     if decision.calculated_quantity is None or decision.calculated_quantity <= 0:
         raise InvalidOrderIntentError("Approved RiskDecision must have a positive calculated_quantity.")
@@ -61,21 +68,23 @@ def build_order_intent(
     # 4. Trading Mode Authority
     settings = get_settings()
     auth_mode = settings.trading_mode.value
-    if requested_trading_mode is not None and requested_trading_mode != auth_mode:
+    if trading_mode != auth_mode:
         raise TradingModeMismatchError(
-            f"Requested trading mode {requested_trading_mode} conflicts with authoritative mode {auth_mode}."
+            f"Requested trading mode {trading_mode} conflicts with global authoritative mode {auth_mode}."
         )
 
     # 5. Order Semantics Validation
-    # Do NOT invent order semantics. Must be explicitly defined in domain (e.g., Signal metadata).
-    order_type_raw = signal.metadata.get("order_type") if hasattr(signal, "metadata") else None
-    if not order_type_raw:
-        raise UnsupportedOrderSemanticsError("Order semantics not explicitly defined in Signal.")
-
-    try:
-        order_type = OrderType(order_type_raw)
-    except ValueError:
-        raise UnsupportedOrderSemanticsError(f"Unsupported explicit order type: {order_type_raw}")
+    # We must NOT invent order semantics.
+    # The domain must provide a canonical order type.
+    if not hasattr(signal, "order_type") or getattr(signal, "order_type") is None:
+        raise UnsupportedOrderSemanticsError("Missing canonical order semantics (order_type) in Signal.")
+        
+    order_type = getattr(signal, "order_type")
+    if not isinstance(order_type, OrderType):
+        try:
+            order_type = OrderType(order_type)
+        except ValueError:
+            raise UnsupportedOrderSemanticsError(f"Unsupported canonical order type: {order_type}") from None
 
     # Validate price requirements according to the explicitly provided order type
     limit_price = None
@@ -86,22 +95,17 @@ def build_order_intent(
         limit_price = signal.proposed_entry_price
 
     if order_type in (OrderType.STOP_MARKET, OrderType.STOP_LIMIT):
-        # The existing Signal schema does not have a top-level stop_price for entry.
-        # It has proposed_entry_price, stop_loss, take_profit.
-        # If STOP_MARKET is requested, we assume proposed_entry_price acts as the stop price.
-        if signal.proposed_entry_price is None:
-             raise UnsupportedOrderSemanticsError(f"{order_type.value} requires a proposed_entry_price.")
-        stop_price = signal.proposed_entry_price
-        if order_type == OrderType.STOP_LIMIT:
-             # Just use it for both if not explicitly split, or require it in metadata.
-             # Safest: look for explicit stop_price in metadata if STOP_LIMIT.
-             explicit_stop = signal.metadata.get("stop_price")
-             if explicit_stop is None:
-                 raise UnsupportedOrderSemanticsError("STOP_LIMIT requires explicit stop_price in metadata.")
-             stop_price = explicit_stop
+        # We enforce that the domain explicitly defines a stop_price property for stop semantics
+        # or we fail closed. The Signal has `proposed_entry_price` but we should not implicitly
+        # assume it's the stop price without domain support.
+        # However, to support STOP orders if they provide a stop_price attribute...
+        if not hasattr(signal, "stop_price") or getattr(signal, "stop_price") is None:
+             raise UnsupportedOrderSemanticsError(
+                 f"{order_type.value} requires an explicit stop_price field, which is missing from Signal."
+             )
+        stop_price = getattr(signal, "stop_price")
 
     # 6. Deterministic Identity
-    # Use canonical serialization to avoid delimiter ambiguity
     identity_payload = {
         "account_id": account_id,
         "risk_decision_id": str(decision.decision_id)

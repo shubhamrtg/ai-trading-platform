@@ -27,7 +27,7 @@ class OrderIntent(BaseModel):
     Cannot be considered executable without a valid risk_decision_id.
     """
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, frozen=True)
 
     intent_id: UUID = Field(..., description="Unique ID for this intent")
     correlation_id: UUID = Field(..., description="Links to the originating trading decision")
@@ -52,12 +52,6 @@ class OrderIntent(BaseModel):
 
     idempotency_key: str = Field(..., description="Strict key to prevent duplicate execution")
     creation_timestamp: datetime = Field(..., description="UTC time created")
-    
-    # Traceability additions
-    risk_policy_version: str | None = None
-    strategy_id: str | None = None
-    strategy_version: str | None = None
-    trading_mode: str | None = None
     
     # Traceability additions
     risk_policy_version: str | None = None

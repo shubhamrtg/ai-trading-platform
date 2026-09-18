@@ -219,8 +219,8 @@ class RiskEngine:
         )
 
         if decision.status == RiskDecisionStatus.APPROVED:
-            import hashlib
-            payload = f"{decision.decision_id}:{decision.calculated_quantity}:{decision.trading_mode.value}:{decision.risk_policy_version}:{decision.correlation_id}"
-            decision._provenance_signature = hashlib.sha256(b"PHASE_I_EXEC_BOUNDARY_" + payload.encode()).hexdigest()  # type: ignore[attr-defined]
+            # Register exact object identity internally
+            from app.execution._provenance import _register_approved_decision
+            _register_approved_decision(decision)
 
         return decision

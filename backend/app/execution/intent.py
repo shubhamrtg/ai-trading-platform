@@ -45,18 +45,12 @@ class ExecutableOrderIntent:
         if decision.status != RiskDecisionStatus.APPROVED:
             raise RejectedRiskDecisionError("Cannot create executable intent from rejected decision.")
 
-        import hashlib
-        import secrets
+        from app.execution._provenance import _verify_exact_decision_provenance
 
         # Application-Layer Provenance Verification
         # We verify the RiskDecision was actually produced by the RiskEngine
-        # by checking the internal provenance signature. This avoids public factories,
-        # importable tokens, and forgeable ABCs.
-        payload = f"{decision.decision_id}:{decision.calculated_quantity}:{decision.trading_mode.value}:{decision.risk_policy_version}:{decision.correlation_id}"
-        expected_sig = hashlib.sha256(b"PHASE_I_EXEC_BOUNDARY_" + payload.encode()).hexdigest()
-
-        actual_sig = getattr(decision, "_provenance_signature", None)
-        if not actual_sig or not secrets.compare_digest(expected_sig, str(actual_sig)):
+        # by checking the exact object identity.
+        if not _verify_exact_decision_provenance(decision):
             raise ValueError(
                 "RiskDecision lacks genuine execution provenance. "
                 "It was likely manufactured instead of being issued by the Risk Engine."

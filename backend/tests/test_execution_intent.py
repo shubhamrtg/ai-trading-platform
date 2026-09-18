@@ -101,18 +101,42 @@ def test_adversarial_forged_decision_rejected(valid_signal: Signal) -> None:
         )
 
 
+def test_adversarial_clone_legitimate_decision_rejected(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+    # Clone the exact fields of a real approved decision
+    cloned_decision = approved_decision.model_copy()
+
+    # Even though fields are identical, the object identity is different.
+    with pytest.raises(ValueError, match="RiskDecision lacks genuine execution provenance"):
+        build_order_intent(
+            signal=valid_signal,
+            decision=cloned_decision,
+            account_id="acc-123",
+        )
+
+
 def test_adversarial_tampering_rejected(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     # Adversary tries to change the quantity after approval
     tampered_decision = approved_decision.model_copy(update={"calculated_quantity": Decimal("100.0")})
-    tampered_decision._provenance_signature = approved_decision._provenance_signature  # type: ignore[attr-defined]
 
-    # It will fail because the hash signature no longer matches the fields
+    # The new object identity is not registered.
     with pytest.raises(ValueError, match="RiskDecision lacks genuine execution provenance"):
         build_order_intent(
             signal=valid_signal,
             decision=tampered_decision,
             account_id="acc-123",
         )
+
+
+def test_no_public_issuance_api() -> None:
+    import app.execution._provenance as prov
+    # Ensure no public registration API exists in the provenance module
+    assert not hasattr(prov, "register")
+    assert not hasattr(prov, "approve")
+    assert not hasattr(prov, "issue")
+    assert not hasattr(prov, "claim")
+    assert not hasattr(prov, "authorize")
+    assert not hasattr(prov, "grant")
+
 
 
 def test_approved_decision_creates_intent(
@@ -172,8 +196,6 @@ def test_quantity_authority(valid_signal: Signal, approved_decision: RiskDecisio
 def test_invalid_quantity_blocked(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     # Even if an attacker somehow modifies the Pydantic model after approval
     invalid_decision = approved_decision.model_copy(update={"calculated_quantity": Decimal("-1.0")})
-
-    invalid_decision._provenance_signature = approved_decision._provenance_signature  # type: ignore[attr-defined]
 
     # It will fail InvalidOrderIntentError first because build_order_intent checks quantity eagerly
     with pytest.raises(InvalidOrderIntentError, match="positive calculated_quantity"):

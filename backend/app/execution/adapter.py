@@ -1,7 +1,7 @@
 import abc
 
-from app.schemas.order import OrderIntent
 from app.schemas.execution import ExecutionResult
+from app.schemas.order import OrderIntent
 
 
 class ExecutionAdapter(abc.ABC):

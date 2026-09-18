@@ -1,7 +1,7 @@
 """Order execution engine."""
 
-from app.execution.engine import ExecutionEngine, ExecutionError
 from app.execution.adapter import ExecutionAdapter
+from app.execution.engine import ExecutionEngine, ExecutionError
 from app.execution.simulated import SimulatedExecutionAdapter
 
 __all__ = [

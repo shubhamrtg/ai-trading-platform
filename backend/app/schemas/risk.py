@@ -11,9 +11,10 @@ Cross-field invariants enforced by model_validator:
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from app.config.settings import TradingMode
 from app.models.enums import RiskDecisionStatus, RiskRejectionCode
@@ -30,7 +31,9 @@ class RiskDecision(BaseModel):
 
     status: RiskDecisionStatus = Field(..., description="APPROVED, REJECTED, or MODIFIED")
     risk_policy_version: str = Field(..., description="Version of the RiskPolicy used")
-    trading_mode: TradingMode = Field(..., description="The trading mode under which this decision was made")
+    trading_mode: TradingMode = Field(
+        ..., description="The trading mode under which this decision was made"
+    )
 
     # If REJECTED, why?
     rejection_codes: list[RiskRejectionCode] = Field(
@@ -54,6 +57,8 @@ class RiskDecision(BaseModel):
     risk_limit_applied: str | None = Field(None, description="Name of the bounding risk rule")
 
     timestamp: datetime = Field(..., description="UTC time of the decision")
+
+    _execution_capability: Any = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_decision_consistency(self) -> "RiskDecision":
@@ -99,5 +104,7 @@ class RiskContext(BaseModel):
     peak_equity: Decimal = Field(..., gt=0)
     current_equity: Decimal = Field(..., gt=0)
     trading_halted: bool = Field(default=False)
-    trading_mode: TradingMode = Field(..., description="The authoritative trading mode for this evaluation")
+    trading_mode: TradingMode = Field(
+        ..., description="The authoritative trading mode for this evaluation"
+    )
     evaluated_at: datetime

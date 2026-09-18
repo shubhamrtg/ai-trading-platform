@@ -17,6 +17,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.config.settings import TradingMode
 from app.models.enums import OrderSide, OrderState, OrderType, TimeInForce
 
 
@@ -57,7 +58,7 @@ class OrderIntent(BaseModel):
     risk_policy_version: str | None = None
     strategy_id: str | None = None
     strategy_version: str | None = None
-    trading_mode: str | None = None
+    trading_mode: TradingMode
 
     @model_validator(mode="after")
     def validate_price_requirements(self) -> "OrderIntent":

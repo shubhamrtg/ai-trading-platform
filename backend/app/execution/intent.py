@@ -1,6 +1,6 @@
 """Order Intent boundary layer.
 
-Responsible for safely translating an approved RiskDecision into an OrderIntent.
+Responsible for safely translating an approved RiskDecision into an ExecutableOrderIntent.
 """
 
 import json
@@ -28,13 +28,60 @@ class OrderIntentLineageError(ValueError):
     """Raised when the Signal and RiskDecision lineage does not match."""
 
 
+from typing import Any
+
+from app.risk.capability import ApprovedRiskCapability
+
+
+class ExecutableOrderIntent:
+    """An immutable, verifiable wrapper proving an OrderIntent has APPROVED provenance.
+
+    This is the only type of OrderIntent accepted by the Execution Engine.
+    """
+
+    _intent: OrderIntent
+    _capability: ApprovedRiskCapability
+    __slots__ = ("_intent", "_capability")
+
+    def __init__(self, intent: OrderIntent, capability: ApprovedRiskCapability):
+        if not isinstance(capability, ApprovedRiskCapability):
+            raise ValueError(
+                "Requires a trusted ApprovedRiskCapability to establish execution authority."
+            )
+
+        if intent.risk_decision_id != capability.decision_id:
+            raise OrderIntentLineageError("Decision ID does not match the capability.")
+        if intent.quantity != capability.calculated_quantity:
+            raise OrderIntentLineageError(
+                "Intent quantity does not match the approved capability quantity."
+            )
+        if intent.trading_mode != capability.trading_mode:
+            raise OrderIntentLineageError(
+                "Intent trading mode does not match the approved capability trading mode."
+            )
+
+        object.__setattr__(self, "_intent", intent)
+        object.__setattr__(self, "_capability", capability)
+
+    @property
+    def intent(self) -> OrderIntent:
+        return self._intent
+
+    @property
+    def capability(self) -> ApprovedRiskCapability:
+        return self._capability
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("ExecutableOrderIntent is strictly immutable.")
+
+
 def build_order_intent(
     signal: Signal,
     decision: RiskDecision,
     account_id: str,
-) -> OrderIntent:
-    """Safely convert an approved RiskDecision into an OrderIntent.
-    
+) -> ExecutableOrderIntent:
+    """Safely convert an approved RiskDecision into an ExecutableOrderIntent.
+
     This is a pure, deterministic translation function that acts as the safety boundary
     between the Risk Engine and the Execution subsystem.
     """
@@ -49,56 +96,62 @@ def build_order_intent(
             raise OrderIntentLineageError("Mismatched strategy_id between RiskDecision and Signal.")
     if hasattr(decision, "strategy_version") and hasattr(signal, "strategy_version"):
         if decision.strategy_version != signal.strategy_version:
-            raise OrderIntentLineageError("Mismatched strategy_version between RiskDecision and Signal.")
+            raise OrderIntentLineageError(
+                "Mismatched strategy_version between RiskDecision and Signal."
+            )
 
     # 2. Approval Gate
     if decision.status != RiskDecisionStatus.APPROVED:
-        raise RejectedRiskDecisionError(f"Cannot create OrderIntent from {decision.status.value} decision.")
+        raise RejectedRiskDecisionError(
+            f"Cannot create OrderIntent from {decision.status.value} decision."
+        )
+
+    # Trusted capability verification
+    capability = getattr(decision, "_execution_capability", None)
+    if not isinstance(capability, ApprovedRiskCapability):
+        raise ValueError(
+            "RiskDecision lacks a trusted ApprovedRiskCapability. It was likely manufactured "
+            "instead of being issued by the Risk Engine."
+        )
 
     # 3. Quantity Authority
     if decision.calculated_quantity is None or decision.calculated_quantity <= 0:
-        raise InvalidOrderIntentError("Approved RiskDecision must have a positive calculated_quantity.")
+        raise InvalidOrderIntentError(
+            "Approved RiskDecision must have a positive calculated_quantity."
+        )
 
     # 4. Trading Mode Authority
-    # Authoritative trading mode is exactly the mode under which RiskDecision was approved
-    auth_mode = decision.trading_mode.value
+    auth_mode = decision.trading_mode
 
     # 5. Order Semantics Validation
-    # The domain must provide a canonical order type explicitly on the Signal.
     order_type = signal.order_type
 
-    # Validate price requirements according to the explicitly provided order type
     limit_price = None
     stop_price = None
     if order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT):
         if signal.proposed_entry_price is None:
-            raise UnsupportedOrderSemanticsError(f"{order_type.value} requires a proposed_entry_price.")
+            raise UnsupportedOrderSemanticsError(
+                f"{order_type.value} requires a proposed_entry_price."
+            )
         limit_price = signal.proposed_entry_price
 
     if order_type in (OrderType.STOP_MARKET, OrderType.STOP_LIMIT):
-        # We enforce that the domain explicitly defines a stop trigger price semantics.
-        # Since the frozen domain documentation states `proposed_entry_price` is the "Proposed limit/stop price",
-        # we map it to stop_price when STOP_MARKET is requested.
-        # However, for STOP_LIMIT, we would need TWO prices (stop trigger + limit).
-        # Since the domain only provides `proposed_entry_price`, we FAIL CLOSED on STOP_LIMIT.
         if order_type == OrderType.STOP_LIMIT:
             raise UnsupportedOrderSemanticsError(
                 "STOP_LIMIT is not safely supported by the current Signal schema as it lacks independent limit and stop prices."
             )
-
         if signal.proposed_entry_price is None:
-            raise UnsupportedOrderSemanticsError(f"{order_type.value} requires a proposed_entry_price to act as the stop trigger.")
+            raise UnsupportedOrderSemanticsError(
+                f"{order_type.value} requires a proposed_entry_price to act as the stop trigger."
+            )
         stop_price = signal.proposed_entry_price
 
     # 6. Deterministic Identity
-    identity_payload = {
-        "account_id": account_id,
-        "risk_decision_id": str(decision.decision_id)
-    }
+    identity_payload = {"account_id": account_id, "risk_decision_id": str(decision.decision_id)}
     canonical_string = json.dumps(identity_payload, sort_keys=True, separators=(",", ":"))
     intent_id = uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
-    return OrderIntent(
+    intent = OrderIntent(
         intent_id=intent_id,
         correlation_id=decision.correlation_id,
         originating_signal_id=signal.signal_id,
@@ -119,3 +172,5 @@ def build_order_intent(
         strategy_version=signal.strategy_version,
         trading_mode=auth_mode,
     )
+
+    return ExecutableOrderIntent(intent, capability)

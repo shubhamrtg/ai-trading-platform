@@ -16,9 +16,9 @@ from app.schemas.signal import Signal
 class RiskEngine:
     """Core deterministic risk evaluation engine."""
 
-
-
-    def _generate_decision_id(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> uuid.UUID:
+    def _generate_decision_id(
+        self, signal: Signal, context: RiskContext, policy: RiskPolicy
+    ) -> uuid.UUID:
         """Generate a deterministic UUID representing the exact evaluation state."""
         import json
 
@@ -28,10 +28,14 @@ class RiskEngine:
                 "correlation_id": str(signal.correlation_id),
                 "side": signal.side.value,
                 "quantity": str(signal.quantity),
-                "proposed_entry_price": str(signal.proposed_entry_price) if signal.proposed_entry_price is not None else None,
+                "proposed_entry_price": str(signal.proposed_entry_price)
+                if signal.proposed_entry_price is not None
+                else None,
                 "stop_loss": str(signal.stop_loss) if signal.stop_loss is not None else None,
                 "strategy_id": str(signal.strategy_id) if signal.strategy_id is not None else None,
-                "strategy_version": str(signal.strategy_version) if signal.strategy_version is not None else None,
+                "strategy_version": str(signal.strategy_version)
+                if signal.strategy_version is not None
+                else None,
             },
             "context": {
                 "portfolio_equity": str(context.portfolio_equity),
@@ -54,15 +58,13 @@ class RiskEngine:
                 "max_daily_loss": str(policy.max_daily_loss),
                 "max_drawdown_percent": str(policy.max_drawdown_percent),
                 "trading_halted": policy.trading_halted,
-            }
+            },
         }
 
-        canonical_string = json.dumps(state, sort_keys=True, separators=(',', ':'))
+        canonical_string = json.dumps(state, sort_keys=True, separators=(",", ":"))
         return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
-    def evaluate(
-        self, signal: Signal, context: RiskContext, policy: RiskPolicy
-    ) -> RiskDecision:
+    def evaluate(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> RiskDecision:
         """Evaluate a signal against the policy and context."""
         rejection_codes: list[RiskRejectionCode] = []
         rejection_reasons: list[str] = []
@@ -112,7 +114,9 @@ class RiskEngine:
         # 5. EXPOSURE LIMIT
         # Exposure requires a reference price. Use proposed_entry_price.
         if signal.proposed_entry_price is None:
-            if signal.side == OrderSide.BUY or (signal.side == OrderSide.SELL and context.current_exposure > 0):
+            if signal.side == OrderSide.BUY or (
+                signal.side == OrderSide.SELL and context.current_exposure > 0
+            ):
                 # We need to evaluate exposure limits, but price is missing
                 rejection_codes.append(RiskRejectionCode.INSUFFICIENT_INFORMATION)
                 rejection_reasons.append(
@@ -199,7 +203,7 @@ class RiskEngine:
         if signal.proposed_entry_price is not None and signal.stop_loss is not None:
             calculated_risk = abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
 
-        return RiskDecision(
+        decision = RiskDecision(
             decision_id=deterministic_id,
             correlation_id=signal.correlation_id,
             signal_id=signal.signal_id,
@@ -211,3 +215,17 @@ class RiskEngine:
             risk_limit_applied=None,
             timestamp=context.evaluated_at,
         )
+
+        from app.risk.capability import _ISSUANCE_TOKEN, ApprovedRiskCapability
+
+        capability = ApprovedRiskCapability(
+            decision_id=decision.decision_id,
+            risk_policy_version=decision.risk_policy_version,
+            trading_mode=decision.trading_mode,
+            calculated_quantity=decision.calculated_quantity,  # type: ignore
+            correlation_id=decision.correlation_id,
+            token=_ISSUANCE_TOKEN,
+        )
+        decision._execution_capability = capability
+
+        return decision

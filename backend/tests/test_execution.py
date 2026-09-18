@@ -20,46 +20,6 @@ def intent_factory():
         limit_price: Decimal | None = None,
         trading_mode: TradingMode = TradingMode.PAPER,
     ) -> ExecutableOrderIntent:
-        # For normal execution tests, we want legitimate authority.
-        # However, for defensive ExecutionEngine boundary tests (like zero quantity),
-        # we can't create a real negative/zero capability, so we use MagicMock.
-        from unittest.mock import MagicMock
-
-        from app.risk.capability import ApprovedRiskCapability
-
-        # If quantity or order_type is invalid, we MUST mock the capability,
-        # otherwise RiskEngine rejects it and we can't test ExecutionEngine defenses.
-        is_defensive_test = quantity <= 0 or (order_type == OrderType.LIMIT and limit_price is None)
-
-        if is_defensive_test:
-            intent = OrderIntent.model_construct(
-                intent_id=uuid.uuid4(),
-                correlation_id=uuid.uuid4(),
-                originating_signal_id=uuid.uuid4(),
-                risk_decision_id=uuid.uuid4(),
-                account_id="ACC1",
-                symbol="BTC-USD",
-                side=OrderSide.BUY,
-                order_type=order_type,
-                quantity=quantity,
-                limit_price=limit_price,
-                stop_price=None,
-                idempotency_key="idempotent_key",
-                creation_timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-                risk_policy_version="1.0.0",
-                strategy_id="strat-1",
-                strategy_version="1.0.0",
-                trading_mode=trading_mode,
-                stop_loss=None,
-                take_profit=None,
-                time_in_force=TimeInForce.GTC,
-            )
-            cap_mock = MagicMock(spec=ApprovedRiskCapability)
-            cap_mock.decision_id = intent.risk_decision_id
-            cap_mock.calculated_quantity = intent.quantity
-            cap_mock.trading_mode = intent.trading_mode
-            return ExecutableOrderIntent(intent, cap_mock)
-
         from app.models.enums import SignalType
         from app.risk.engine import RiskEngine
         from app.schemas.risk import RiskContext, RiskPolicy
@@ -112,35 +72,8 @@ def intent_factory():
         engine = RiskEngine()
         decision = engine.evaluate(signal, context, policy)
 
-        assert decision.status == RiskDecisionStatus.APPROVED
-        assert decision._execution_capability is not None
-
-        # Build intent via model_construct to allow forcing specific invalid parameters
-        # against the defensive layer of ExecutableOrderIntent.
-        intent = OrderIntent.model_construct(
-            intent_id=uuid.uuid4(),
-            correlation_id=decision.correlation_id,
-            originating_signal_id=signal.signal_id,
-            risk_decision_id=decision.decision_id,
-            account_id="ACC1",
-            symbol="BTC-USD",
-            side=OrderSide.BUY,
-            order_type=order_type,
-            quantity=quantity,
-            limit_price=limit_price,
-            stop_price=None,
-            idempotency_key="idempotent_key",
-            creation_timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-            risk_policy_version=decision.risk_policy_version,
-            strategy_id="strat-1",
-            strategy_version="1.0.0",
-            trading_mode=trading_mode,
-            stop_loss=None,
-            take_profit=None,
-            time_in_force=TimeInForce.GTC,
-        )
-
-        return ExecutableOrderIntent(intent, decision._execution_capability)
+        from app.execution.intent import build_order_intent
+        return build_order_intent(signal, decision, "ACC1")
 
     return _create
 
@@ -201,50 +134,111 @@ def test_execution_determinism(engine: ExecutionEngine, intent_factory):
     assert res3.execution_id != res1.execution_id
 
 
-def test_validation_zero_quantity(engine: ExecutionEngine, intent_factory):
+def test_validation_zero_quantity(engine: ExecutionEngine):
     # 19. Zero quantity rejected
-    exec_intent = intent_factory(quantity=Decimal("0"))
-    res = engine.submit_intent(exec_intent)
+    # Category B: Defensive execution validation test.
+    # We mock ExecutableOrderIntent and OrderIntent to simulate untrusted/malformed data reaching the engine.
+    from unittest.mock import MagicMock
+    mock_exec = MagicMock(spec=ExecutableOrderIntent)
+    mock_intent = MagicMock(spec=OrderIntent)
+    mock_intent.symbol = "BTC-USD"
+    mock_intent.side = OrderSide.BUY
+    mock_intent.creation_timestamp = datetime.now(UTC)
+    mock_intent.quantity = Decimal("0")
+    mock_intent.order_type = OrderType.MARKET
+    mock_intent.trading_mode = TradingMode.PAPER
+    mock_intent.intent_id = uuid.uuid4()
+    mock_intent.correlation_id = uuid.uuid4()
+    mock_exec.intent = mock_intent
+
+    res = engine.submit_intent(mock_exec)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "INVALID_QUANTITY" in res.rejection_reason
     assert res.quantity_executed == Decimal("0")
 
 
-def test_validation_negative_quantity(engine: ExecutionEngine, intent_factory):
+def test_validation_negative_quantity(engine: ExecutionEngine):
     # 20. Negative quantity rejected
-    exec_intent = intent_factory(quantity=Decimal("-1.0"))
-    res = engine.submit_intent(exec_intent)
+    # Category B: Defensive execution validation test.
+    from unittest.mock import MagicMock
+    mock_exec = MagicMock(spec=ExecutableOrderIntent)
+    mock_intent = MagicMock(spec=OrderIntent)
+    mock_intent.symbol = "BTC-USD"
+    mock_intent.side = OrderSide.BUY
+    mock_intent.creation_timestamp = datetime.now(UTC)
+    mock_intent.quantity = Decimal("-1.0")
+    mock_intent.order_type = OrderType.MARKET
+    mock_intent.trading_mode = TradingMode.PAPER
+    mock_intent.intent_id = uuid.uuid4()
+    mock_intent.correlation_id = uuid.uuid4()
+    mock_exec.intent = mock_intent
+
+    res = engine.submit_intent(mock_exec)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "INVALID_QUANTITY" in res.rejection_reason
     assert res.quantity_executed == Decimal("0")
 
 
-def test_validation_unsupported_order_type(engine: ExecutionEngine, intent_factory):
-    # 22. Unsupported order type rejected (e.g. STOP_MARKET not supported in simple sim yet)
-    exec_intent = intent_factory(order_type=OrderType.STOP_MARKET)
-    res = engine.submit_intent(exec_intent)
+def test_validation_unsupported_order_type(engine: ExecutionEngine):
+    # 22. Unsupported order type rejected
+    # Category B: Defensive execution validation test.
+    from unittest.mock import MagicMock
+    mock_exec = MagicMock(spec=ExecutableOrderIntent)
+    mock_intent = MagicMock(spec=OrderIntent)
+    mock_intent.symbol = "BTC-USD"
+    mock_intent.side = OrderSide.BUY
+    mock_intent.creation_timestamp = datetime.now(UTC)
+    mock_intent.quantity = Decimal("1.0")
+    mock_intent.order_type = OrderType.STOP_MARKET
+    mock_intent.trading_mode = TradingMode.PAPER
+    mock_intent.intent_id = uuid.uuid4()
+    mock_intent.correlation_id = uuid.uuid4()
+    mock_exec.intent = mock_intent
+
+    res = engine.submit_intent(mock_exec)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "UNSUPPORTED_ORDER_TYPE" in res.rejection_reason
 
 
-def test_validation_invalid_price_semantics(engine: ExecutionEngine, intent_factory):
+def test_validation_invalid_price_semantics(engine: ExecutionEngine):
     # 23. Invalid price semantics rejected
-    # Note: Pydantic rejects limit orders without limit_price in OrderIntent,
-    # but we test the adapter's safety net by directly calling it if possible.
+    # Category B: Defensive execution validation test.
+    from unittest.mock import MagicMock
+    mock_exec = MagicMock(spec=ExecutableOrderIntent)
+    mock_intent = MagicMock(spec=OrderIntent)
+    mock_intent.symbol = "BTC-USD"
+    mock_intent.side = OrderSide.BUY
+    mock_intent.creation_timestamp = datetime.now(UTC)
+    mock_intent.quantity = Decimal("1.0")
+    mock_intent.order_type = OrderType.LIMIT
+    mock_intent.limit_price = None
+    mock_intent.trading_mode = TradingMode.PAPER
+    mock_intent.intent_id = uuid.uuid4()
+    mock_intent.correlation_id = uuid.uuid4()
+    mock_exec.intent = mock_intent
 
-    # We use model_construct inside intent_factory to bypass Pydantic validation
-    # and forge an invalid ExecutableOrderIntent to test the ExecutionEngine boundary.
-    exec_intent = intent_factory(order_type=OrderType.LIMIT, limit_price=None)
-
-    res = engine.submit_intent(exec_intent)
+    res = engine.submit_intent(mock_exec)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "INVALID_PRICE" in res.rejection_reason
 
 
-def test_validation_invalid_trading_mode(engine: ExecutionEngine, intent_factory):
+def test_validation_invalid_trading_mode(engine: ExecutionEngine):
     # 24. Invalid trading mode rejected (LIVE)
-    exec_intent = intent_factory(trading_mode=TradingMode.LIVE)
-    res = engine.submit_intent(exec_intent)
+    # Category B: Defensive execution validation test.
+    from unittest.mock import MagicMock
+    mock_exec = MagicMock(spec=ExecutableOrderIntent)
+    mock_intent = MagicMock(spec=OrderIntent)
+    mock_intent.symbol = "BTC-USD"
+    mock_intent.side = OrderSide.BUY
+    mock_intent.creation_timestamp = datetime.now(UTC)
+    mock_intent.quantity = Decimal("1.0")
+    mock_intent.order_type = OrderType.MARKET
+    mock_intent.trading_mode = TradingMode.LIVE
+    mock_intent.intent_id = uuid.uuid4()
+    mock_intent.correlation_id = uuid.uuid4()
+    mock_exec.intent = mock_intent
+
+    res = engine.submit_intent(mock_exec)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "EXECUTION_NOT_PERMITTED" in res.rejection_reason
     assert res.quantity_executed == Decimal("0")

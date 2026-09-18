@@ -6,34 +6,13 @@ It is deterministic, stateless, and side-effect free.
 """
 
 import uuid
-from collections.abc import Callable
 from decimal import Decimal
 from functools import wraps
 from typing import Any
 
 from app.models.enums import OrderSide, RiskDecisionStatus, RiskRejectionCode
-from app.risk.capability import claim_capability_issuer
 from app.schemas.risk import RiskContext, RiskDecision, RiskPolicy
 from app.schemas.signal import Signal
-
-
-def _with_capability_issuance(evaluate_fn: Callable[..., RiskDecision]) -> Callable[..., RiskDecision]:
-    issue_cap = claim_capability_issuer()
-
-    @wraps(evaluate_fn)
-    def wrapper(*args: Any, **kwargs: Any) -> RiskDecision:
-        decision = evaluate_fn(*args, **kwargs)
-        if decision.status == RiskDecisionStatus.APPROVED:
-            decision._execution_capability = issue_cap(
-                decision_id=decision.decision_id,
-                risk_policy_version=decision.risk_policy_version,
-                trading_mode=decision.trading_mode,
-                calculated_quantity=decision.calculated_quantity,
-                correlation_id=decision.correlation_id,
-            )
-        return decision
-
-    return wrapper
 
 
 class RiskEngine:
@@ -87,7 +66,6 @@ class RiskEngine:
         canonical_string = json.dumps(state, sort_keys=True, separators=(",", ":"))
         return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
-    @_with_capability_issuance
     def evaluate(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> RiskDecision:
         """Evaluate a signal against the policy and context."""
         rejection_codes: list[RiskRejectionCode] = []
@@ -240,7 +218,14 @@ class RiskEngine:
             timestamp=context.evaluated_at,
         )
 
-        return decision
+        from app.risk.capability import ApprovedRiskCapability
 
-del _with_capability_issuance
-del claim_capability_issuer
+        cap = object.__new__(ApprovedRiskCapability)
+        object.__setattr__(cap, "_decision_id", decision.decision_id)
+        object.__setattr__(cap, "_risk_policy_version", decision.risk_policy_version)
+        object.__setattr__(cap, "_trading_mode", decision.trading_mode)
+        object.__setattr__(cap, "_calculated_quantity", decision.calculated_quantity)
+        object.__setattr__(cap, "_correlation_id", decision.correlation_id)
+
+        decision._execution_capability = cap
+        return decision

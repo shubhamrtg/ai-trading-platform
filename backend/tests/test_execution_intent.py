@@ -50,7 +50,6 @@ def valid_signal() -> Signal:
 def approved_decision(valid_signal: Signal) -> RiskDecision:
     engine = RiskEngine()
     context = RiskContext(
-        account_id="acc-123",
         trading_mode=TradingMode.PAPER,
         current_position=Decimal("0.0"),
         current_exposure=Decimal("0.0"),
@@ -118,15 +117,11 @@ def test_no_public_capability_issuance_api() -> None:
     # Ensure there is no _issue method on ApprovedRiskCapability
     assert not hasattr(ApprovedRiskCapability, "_issue")
     assert not hasattr(ApprovedRiskCapability, "issue")
-
-
-def test_claim_capability_issuer_is_consumed() -> None:
-    # Any attempt by ordinary application code to get the issuer factory will fail
-    # because it is consumed exactly once by RiskEngine during module load
-    from app.risk.capability import claim_capability_issuer
-
-    with pytest.raises(RuntimeError, match="The trusted capability issuer has already been claimed"):
-        claim_capability_issuer()
+    
+    # Ensure no claim_capability_issuer exists in the capability module
+    import app.risk.capability as cap_module
+    assert not hasattr(cap_module, "claim_capability_issuer")
+    assert not hasattr(cap_module, "_issue")
 
 
 def test_approved_decision_creates_intent(

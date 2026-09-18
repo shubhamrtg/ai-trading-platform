@@ -216,15 +216,14 @@ class RiskEngine:
             timestamp=context.evaluated_at,
         )
 
-        from app.risk.capability import _ISSUANCE_TOKEN, ApprovedRiskCapability
+        from app.risk.capability import ApprovedRiskCapability
 
-        capability = ApprovedRiskCapability(
+        capability = ApprovedRiskCapability._issue(
             decision_id=decision.decision_id,
             risk_policy_version=decision.risk_policy_version,
             trading_mode=decision.trading_mode,
             calculated_quantity=decision.calculated_quantity,  # type: ignore
             correlation_id=decision.correlation_id,
-            token=_ISSUANCE_TOKEN,
         )
         decision._execution_capability = capability
 

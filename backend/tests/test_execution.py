@@ -7,7 +7,7 @@ from app.config.settings import TradingMode
 from app.execution.engine import ExecutionEngine, ExecutionError
 from app.execution.intent import ExecutableOrderIntent
 from app.execution.simulated import SimulatedExecutionAdapter
-from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
+from app.models.enums import OrderSide, OrderType, RiskDecisionStatus, TimeInForce
 from app.schemas.execution import ExecutionStatus
 from app.schemas.order import OrderIntent
 from app.schemas.risk import RiskDecision
@@ -16,12 +16,12 @@ from app.schemas.risk import RiskDecision
 @pytest.fixture
 def intent_factory():
     def _create(
-        quantity=Decimal("1.5"),
-        order_type=OrderType.MARKET,
-        limit_price=None,
-        trading_mode=TradingMode.PAPER,
+        quantity: Decimal = Decimal("1.5"),
+        order_type: OrderType = OrderType.MARKET,
+        limit_price: Decimal | None = None,
+        trading_mode: TradingMode = TradingMode.PAPER,
     ) -> ExecutableOrderIntent:
-        intent = OrderIntent(
+        intent = OrderIntent.model_construct(
             intent_id=uuid.uuid4(),
             correlation_id=uuid.uuid4(),
             originating_signal_id=uuid.uuid4(),
@@ -39,8 +39,11 @@ def intent_factory():
             strategy_id="strat1",
             strategy_version="1.0",
             trading_mode=trading_mode,
+            stop_loss=None,
+            take_profit=None,
+            time_in_force=TimeInForce.GTC,
         )
-        from app.risk.capability import _ISSUANCE_TOKEN, ApprovedRiskCapability
+        from app.risk.capability import ApprovedRiskCapability
 
         decision = RiskDecision(
             decision_id=intent.risk_decision_id,
@@ -54,13 +57,12 @@ def intent_factory():
             risk_policy_version=intent.risk_policy_version or "1.0",
             timestamp=intent.creation_timestamp,
         )
-        capability = ApprovedRiskCapability(
+        capability = ApprovedRiskCapability._issue(
             decision_id=decision.decision_id,
             risk_policy_version=decision.risk_policy_version,
             trading_mode=decision.trading_mode,
             calculated_quantity=decision.calculated_quantity,  # type: ignore
             correlation_id=decision.correlation_id,
-            token=_ISSUANCE_TOKEN,
         )
         return ExecutableOrderIntent(intent, capability)
 
@@ -125,9 +127,7 @@ def test_execution_determinism(engine: ExecutionEngine, intent_factory):
 
 def test_validation_zero_quantity(engine: ExecutionEngine, intent_factory):
     # 19. Zero quantity rejected
-    exec_intent = intent_factory()
-    intent = exec_intent.intent
-    object.__setattr__(intent, "quantity", Decimal("0"))
+    exec_intent = intent_factory(quantity=Decimal("0"))
     res = engine.submit_intent(exec_intent)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "INVALID_QUANTITY" in res.rejection_reason
@@ -136,9 +136,7 @@ def test_validation_zero_quantity(engine: ExecutionEngine, intent_factory):
 
 def test_validation_negative_quantity(engine: ExecutionEngine, intent_factory):
     # 20. Negative quantity rejected
-    exec_intent = intent_factory()
-    intent = exec_intent.intent
-    object.__setattr__(intent, "quantity", Decimal("-1.0"))
+    exec_intent = intent_factory(quantity=Decimal("-1.0"))
     res = engine.submit_intent(exec_intent)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "INVALID_QUANTITY" in res.rejection_reason
@@ -147,9 +145,7 @@ def test_validation_negative_quantity(engine: ExecutionEngine, intent_factory):
 
 def test_validation_unsupported_order_type(engine: ExecutionEngine, intent_factory):
     # 22. Unsupported order type rejected (e.g. STOP_MARKET not supported in simple sim yet)
-    exec_intent = intent_factory()
-    intent = exec_intent.intent
-    object.__setattr__(intent, "order_type", OrderType.STOP_MARKET)
+    exec_intent = intent_factory(order_type=OrderType.STOP_MARKET)
     res = engine.submit_intent(exec_intent)
     assert res.status == ExecutionStatus.REJECTED
     assert res.rejection_reason is not None and "UNSUPPORTED_ORDER_TYPE" in res.rejection_reason
@@ -159,18 +155,10 @@ def test_validation_invalid_price_semantics(engine: ExecutionEngine, intent_fact
     # 23. Invalid price semantics rejected
     # Note: Pydantic rejects limit orders without limit_price in OrderIntent,
     # but we test the adapter's safety net by directly calling it if possible.
-    # To bypass Pydantic for the test, we mock or construct carefully.
 
-    # Pydantic validates `OrderIntent`. If we instantiate normally, it fails.
-    with pytest.raises(ValueError, match="LIMIT orders require a limit_price"):
-        intent_factory(order_type=OrderType.LIMIT, limit_price=None)
-
-    # We can mock to test adapter safety net
-    exec_intent = intent_factory(order_type=OrderType.MARKET)
-    intent = exec_intent.intent
-    # forcefully alter without validation
-    object.__setattr__(intent, "order_type", OrderType.LIMIT)
-    object.__setattr__(intent, "limit_price", None)
+    # We use model_construct inside intent_factory to bypass Pydantic validation
+    # and forge an invalid ExecutableOrderIntent to test the ExecutionEngine boundary.
+    exec_intent = intent_factory(order_type=OrderType.LIMIT, limit_price=None)
 
     res = engine.submit_intent(exec_intent)
     assert res.status == ExecutionStatus.REJECTED

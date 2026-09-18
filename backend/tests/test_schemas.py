@@ -381,7 +381,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.APPROVED,
             risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+            trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("1.5"),
             timestamp=datetime.now(UTC),
         )
@@ -395,7 +395,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.REJECTED,
             risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+            trading_mode=TradingMode.PAPER,
             rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
             rejection_reasons=["Total exposure would exceed 50% of equity"],
             timestamp=datetime.now(UTC),
@@ -412,7 +412,7 @@ class TestRiskDecision:
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.REJECTED,
                 risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+                trading_mode=TradingMode.PAPER,
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 calculated_risk=None,
@@ -428,7 +428,7 @@ class TestRiskDecision:
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.APPROVED,
                 risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+                trading_mode=TradingMode.PAPER,
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 timestamp=datetime.now(UTC),
@@ -441,7 +441,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.MODIFIED,
             risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+            trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("0.5"),
             risk_limit_applied="MAX_POSITION_SIZE",
             timestamp=datetime.now(UTC),
@@ -471,6 +471,7 @@ class TestOrderIntent:
             "quantity": Decimal("1.0"),
             "idempotency_key": f"key-{uuid4()}",
             "creation_timestamp": datetime.now(UTC),
+            "trading_mode": TradingMode.PAPER,
         }
         defaults.update(overrides)
         return OrderIntent(**defaults)  # type: ignore[arg-type]
@@ -893,7 +894,7 @@ class TestCorrelationID:
             signal_id=sig_id,
             status=RiskDecisionStatus.APPROVED,
             risk_policy_version="1.0.0",
-        trading_mode=TradingMode.PAPER,
+            trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("1.0"),
             timestamp=datetime.now(UTC),
         )
@@ -910,6 +911,7 @@ class TestCorrelationID:
             quantity=Decimal("1.0"),
             idempotency_key="test-key-1",
             creation_timestamp=datetime.now(UTC),
+            trading_mode=TradingMode.PAPER,
         )
 
         assert signal.correlation_id == corr_id

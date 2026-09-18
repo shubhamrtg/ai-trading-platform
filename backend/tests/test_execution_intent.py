@@ -1,6 +1,6 @@
-from app.risk.capability import _ISSUANCE_TOKEN, ApprovedRiskCapability
-
 """Tests for Phase H: Order Intent boundary layer."""
+
+from app.risk.capability import ApprovedRiskCapability
 
 import json
 import uuid
@@ -17,8 +17,9 @@ from app.execution.intent import (
     build_order_intent,
 )
 from app.models.enums import OrderSide, OrderType, RiskDecisionStatus, SignalType
+from app.risk.engine import RiskEngine
 from app.schemas.order import OrderIntent
-from app.schemas.risk import RiskDecision
+from app.schemas.risk import RiskContext, RiskDecision, RiskPolicy
 from app.schemas.signal import Signal
 from pydantic import ValidationError
 
@@ -48,28 +49,33 @@ def valid_signal() -> Signal:
 
 @pytest.fixture
 def approved_decision(valid_signal: Signal) -> RiskDecision:
-    decision = RiskDecision(
-        decision_id=uuid.uuid4(),
-        correlation_id=valid_signal.correlation_id,
-        signal_id=valid_signal.signal_id,
-        status=RiskDecisionStatus.APPROVED,
-        risk_policy_version="1.0.0",
+    engine = RiskEngine()
+    context = RiskContext(
+        account_id="acc-123",
         trading_mode=TradingMode.PAPER,
-        rejection_codes=[],
-        rejection_reasons=[],
-        calculated_risk=Decimal("5000.0"),
-        calculated_quantity=Decimal("0.5"),
-        risk_limit_applied=None,
-        timestamp=datetime.now(UTC),
+        current_position=Decimal("0.0"),
+        current_exposure=Decimal("0.0"),
+        portfolio_equity=Decimal("100000.0"),
+        peak_equity=Decimal("100000.0"),
+        current_equity=Decimal("100000.0"),
+        available_cash=Decimal("100000.0"),
+        daily_pnl=Decimal("0.0"),
+        trading_halted=False,
+        evaluated_at=datetime.now(UTC),
     )
-    decision._execution_capability = ApprovedRiskCapability(
-        decision_id=decision.decision_id,
-        risk_policy_version=decision.risk_policy_version,
-        trading_mode=decision.trading_mode,
-        calculated_quantity=decision.calculated_quantity,  # type: ignore
-        correlation_id=decision.correlation_id,
-        token=_ISSUANCE_TOKEN,
+    policy = RiskPolicy(
+        version="1.0.0",
+        max_order_quantity=Decimal("10.0"),
+        max_position_quantity=Decimal("10.0"),
+        max_exposure_amount=Decimal("100000.0"),
+        max_exposure_percent=Decimal("1.0"),
+        max_risk_per_trade=Decimal("10000.0"),
+        max_daily_loss=Decimal("5000.0"),
+        max_drawdown_percent=Decimal("0.2"),
+        trading_halted=False,
     )
+    decision = engine.evaluate(valid_signal, context, policy)
+    assert decision.status == RiskDecisionStatus.APPROVED
     return decision
 
 
@@ -137,11 +143,25 @@ def test_rejected_decision_cannot_create_intent(
 
 def test_quantity_authority(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     assert valid_signal.quantity == Decimal("1.0")
-    assert approved_decision.calculated_quantity == Decimal("0.5")
+
+    # We forge a decision with a different calculated_quantity to prove the intent
+    # respects the decision authority over the original signal quantity.
+    decision = approved_decision.model_copy(
+        update={"calculated_quantity": Decimal("0.5"), "decision_id": uuid.uuid4()}
+    )
+    decision._execution_capability = ApprovedRiskCapability._issue(
+        decision_id=decision.decision_id,
+        risk_policy_version=decision.risk_policy_version,
+        trading_mode=decision.trading_mode,
+        calculated_quantity=decision.calculated_quantity,  # type: ignore
+        correlation_id=decision.correlation_id,
+    )
+
+    assert decision.calculated_quantity == Decimal("0.5")
 
     intent = build_order_intent(
         signal=valid_signal,
-        decision=approved_decision,
+        decision=decision,
         account_id="acc-123",
     )
 
@@ -179,13 +199,12 @@ def test_different_approved_decisions_produce_different_identities(
     intent1 = build_order_intent(valid_signal, approved_decision, "acc-1")
 
     decision2 = approved_decision.model_copy(update={"decision_id": uuid.uuid4()})
-    decision2._execution_capability = ApprovedRiskCapability(
+    decision2._execution_capability = ApprovedRiskCapability._issue(
         decision_id=decision2.decision_id,
         risk_policy_version=decision2.risk_policy_version,
         trading_mode=decision2.trading_mode,
         calculated_quantity=decision2.calculated_quantity,  # type: ignore
         correlation_id=decision2.correlation_id,
-        token=_ISSUANCE_TOKEN,
     )
     intent2 = build_order_intent(valid_signal, decision2, "acc-1")
 

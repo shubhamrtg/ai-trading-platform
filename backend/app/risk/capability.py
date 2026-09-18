@@ -4,9 +4,6 @@ from typing import Any
 
 from app.config.settings import TradingMode
 
-# The internal module token that prevents arbitrary instantiation
-_ISSUANCE_TOKEN = object()
-
 
 class ApprovedRiskCapability:
     """Trusted capability representing an approved risk decision.
@@ -21,7 +18,7 @@ class ApprovedRiskCapability:
     _trading_mode: TradingMode
     _calculated_quantity: Decimal
     _correlation_id: uuid.UUID
-    
+
     __slots__ = (
         "_decision_id",
         "_risk_policy_version",
@@ -30,27 +27,33 @@ class ApprovedRiskCapability:
         "_correlation_id",
     )
 
-    def __init__(
-        self,
+    def __new__(cls, *args: Any, **kwargs: Any) -> "ApprovedRiskCapability":
+        raise TypeError(
+            "ApprovedRiskCapability cannot be instantiated directly. "
+            "Execution authority is issued exclusively by the RiskEngine."
+        )
+
+    @classmethod
+    def _issue(
+        cls,
         decision_id: uuid.UUID,
         risk_policy_version: str,
         trading_mode: TradingMode,
         calculated_quantity: Decimal,
         correlation_id: uuid.UUID,
-        token: Any,
-    ) -> None:
-        if token is not _ISSUANCE_TOKEN:
-            raise ValueError(
-                "ApprovedRiskCapability cannot be manufactured by callers. "
-                "It must be issued through the trusted Risk Engine boundary."
-            )
+    ) -> "ApprovedRiskCapability":
+        """Internal factory exclusively for RiskEngine issuance."""
+        # Bypass __new__ restriction by using object.__new__
+        instance = object.__new__(cls)
 
         # We must use object.__setattr__ because the class overrides __setattr__ to be immutable
-        object.__setattr__(self, "_decision_id", decision_id)
-        object.__setattr__(self, "_risk_policy_version", risk_policy_version)
-        object.__setattr__(self, "_trading_mode", trading_mode)
-        object.__setattr__(self, "_calculated_quantity", calculated_quantity)
-        object.__setattr__(self, "_correlation_id", correlation_id)
+        object.__setattr__(instance, "_decision_id", decision_id)
+        object.__setattr__(instance, "_risk_policy_version", risk_policy_version)
+        object.__setattr__(instance, "_trading_mode", trading_mode)
+        object.__setattr__(instance, "_calculated_quantity", calculated_quantity)
+        object.__setattr__(instance, "_correlation_id", correlation_id)
+
+        return instance
 
     @property
     def decision_id(self) -> uuid.UUID:

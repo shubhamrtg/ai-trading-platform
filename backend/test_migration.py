@@ -121,10 +121,10 @@ def test_migration_unmappable_order(setup_base_db):
 
 def test_phase_h_migration(setup_base_db):
     db_path = setup_base_db
-    
+
     # 1. Upgrade right before Phase H migration
     run_alembic(command.upgrade, "d57668702d42")
-    
+
     conn = sqlite3.connect(f"backend/{db_path}")
     cur = conn.cursor()
 
@@ -200,7 +200,7 @@ def test_phase_h_migration(setup_base_db):
     insert_decision(decQC2, sigQC)
     insert_intent_qty(intQC1, sigQC, decQC1, "LIMIT", 100)
     insert_intent_qty(intQC2, sigQC, decQC2, "MARKET", 200)
-    
+
     conn.commit()
     conn.close()
 

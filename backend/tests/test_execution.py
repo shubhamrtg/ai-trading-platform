@@ -10,7 +10,6 @@ from app.execution.simulated import SimulatedExecutionAdapter
 from app.models.enums import OrderSide, OrderType, RiskDecisionStatus, TimeInForce
 from app.schemas.execution import ExecutionStatus
 from app.schemas.order import OrderIntent
-from app.schemas.risk import RiskDecision
 
 
 @pytest.fixture
@@ -21,11 +20,108 @@ def intent_factory():
         limit_price: Decimal | None = None,
         trading_mode: TradingMode = TradingMode.PAPER,
     ) -> ExecutableOrderIntent:
+        # For normal execution tests, we want legitimate authority.
+        # However, for defensive ExecutionEngine boundary tests (like zero quantity),
+        # we can't create a real negative/zero capability, so we use MagicMock.
+        from unittest.mock import MagicMock
+
+        from app.risk.capability import ApprovedRiskCapability
+
+        # If quantity or order_type is invalid, we MUST mock the capability,
+        # otherwise RiskEngine rejects it and we can't test ExecutionEngine defenses.
+        is_defensive_test = quantity <= 0 or (order_type == OrderType.LIMIT and limit_price is None)
+
+        if is_defensive_test:
+            intent = OrderIntent.model_construct(
+                intent_id=uuid.uuid4(),
+                correlation_id=uuid.uuid4(),
+                originating_signal_id=uuid.uuid4(),
+                risk_decision_id=uuid.uuid4(),
+                account_id="ACC1",
+                symbol="BTC-USD",
+                side=OrderSide.BUY,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+                stop_price=None,
+                idempotency_key="idempotent_key",
+                creation_timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                risk_policy_version="1.0.0",
+                strategy_id="strat-1",
+                strategy_version="1.0.0",
+                trading_mode=trading_mode,
+                stop_loss=None,
+                take_profit=None,
+                time_in_force=TimeInForce.GTC,
+            )
+            cap_mock = MagicMock(spec=ApprovedRiskCapability)
+            cap_mock.decision_id = intent.risk_decision_id
+            cap_mock.calculated_quantity = intent.quantity
+            cap_mock.trading_mode = intent.trading_mode
+            return ExecutableOrderIntent(intent, cap_mock)
+
+        from app.models.enums import SignalType
+        from app.risk.engine import RiskEngine
+        from app.schemas.risk import RiskContext, RiskPolicy
+        from app.schemas.signal import Signal
+
+        signal = Signal(
+            signal_id=uuid.uuid4(),
+            correlation_id=uuid.uuid4(),
+            strategy_id="strat-1",
+            strategy_version="1.0.0",
+            symbol="BTC-USD",
+            timestamp=datetime.now(UTC),
+            timeframe="1h",
+            side=OrderSide.BUY,
+            order_type=order_type,
+            signal_type=SignalType.ENTRY,
+            quantity=quantity,
+            proposed_entry_price=limit_price or Decimal("50000.0"),
+            stop_loss=Decimal("45000.0"),
+            take_profit=Decimal("60000.0"),
+            confidence=0.9,
+            rationale="Test"
+        )
+
+        context = RiskContext(
+            trading_mode=trading_mode,
+            current_position=Decimal("0.0"),
+            current_exposure=Decimal("0.0"),
+            portfolio_equity=Decimal("100000.0"),
+            peak_equity=Decimal("100000.0"),
+            current_equity=Decimal("100000.0"),
+            available_cash=Decimal("100000.0"),
+            daily_pnl=Decimal("0.0"),
+            trading_halted=False,
+            evaluated_at=datetime.now(UTC)
+        )
+
+        policy = RiskPolicy(
+            version="1.0.0",
+            max_order_quantity=Decimal("100.0"),
+            max_position_quantity=Decimal("100.0"),
+            max_exposure_amount=Decimal("100000.0"),
+            max_exposure_percent=Decimal("1.0"),
+            max_risk_per_trade=Decimal("10000.0"),
+            max_daily_loss=Decimal("5000.0"),
+            max_drawdown_percent=Decimal("0.2"),
+            trading_halted=False
+        )
+
+        engine = RiskEngine()
+        decision = engine.evaluate(signal, context, policy)
+
+        assert decision.status == RiskDecisionStatus.APPROVED
+        assert decision._execution_capability is not None
+
+        # Build intent via model_construct to allow forcing specific invalid parameters
+        # against the defensive layer of ExecutableOrderIntent.
         intent = OrderIntent.model_construct(
             intent_id=uuid.uuid4(),
-            correlation_id=uuid.uuid4(),
-            originating_signal_id=uuid.uuid4(),
-            risk_decision_id=uuid.uuid4(),
+            correlation_id=decision.correlation_id,
+            originating_signal_id=signal.signal_id,
+            risk_decision_id=decision.decision_id,
             account_id="ACC1",
             symbol="BTC-USD",
             side=OrderSide.BUY,
@@ -35,36 +131,16 @@ def intent_factory():
             stop_price=None,
             idempotency_key="idempotent_key",
             creation_timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-            risk_policy_version="1.0",
-            strategy_id="strat1",
-            strategy_version="1.0",
+            risk_policy_version=decision.risk_policy_version,
+            strategy_id="strat-1",
+            strategy_version="1.0.0",
             trading_mode=trading_mode,
             stop_loss=None,
             take_profit=None,
             time_in_force=TimeInForce.GTC,
         )
-        from app.risk.capability import ApprovedRiskCapability
 
-        decision = RiskDecision(
-            decision_id=intent.risk_decision_id,
-            signal_id=intent.originating_signal_id,
-            correlation_id=intent.correlation_id,
-            status=RiskDecisionStatus.APPROVED,
-            calculated_quantity=intent.quantity,
-            calculated_risk=Decimal("0.0"),
-            risk_limit_applied=None,
-            trading_mode=intent.trading_mode,
-            risk_policy_version=intent.risk_policy_version or "1.0",
-            timestamp=intent.creation_timestamp,
-        )
-        capability = ApprovedRiskCapability._issue(
-            decision_id=decision.decision_id,
-            risk_policy_version=decision.risk_policy_version,
-            trading_mode=decision.trading_mode,
-            calculated_quantity=decision.calculated_quantity,  # type: ignore
-            correlation_id=decision.correlation_id,
-        )
-        return ExecutableOrderIntent(intent, capability)
+        return ExecutableOrderIntent(intent, decision._execution_capability)
 
     return _create
 

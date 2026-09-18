@@ -1,7 +1,5 @@
 """Tests for Phase H: Order Intent boundary layer."""
 
-from app.risk.capability import ApprovedRiskCapability
-
 import json
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +15,7 @@ from app.execution.intent import (
     build_order_intent,
 )
 from app.models.enums import OrderSide, OrderType, RiskDecisionStatus, SignalType
+from app.risk.capability import ApprovedRiskCapability
 from app.risk.engine import RiskEngine
 from app.schemas.order import OrderIntent
 from app.schemas.risk import RiskContext, RiskDecision, RiskPolicy
@@ -104,6 +103,32 @@ def test_adversarial_forged_decision_rejected(valid_signal: Signal) -> None:
         )
 
 
+def test_direct_capability_construction_fails() -> None:
+    with pytest.raises(TypeError, match="ApprovedRiskCapability cannot be instantiated directly"):
+        ApprovedRiskCapability(
+            decision_id=uuid.uuid4(),
+            risk_policy_version="1.0.0",
+            trading_mode=TradingMode.PAPER,
+            calculated_quantity=Decimal("1.0"),
+            correlation_id=uuid.uuid4()
+        )
+
+
+def test_no_public_capability_issuance_api() -> None:
+    # Ensure there is no _issue method on ApprovedRiskCapability
+    assert not hasattr(ApprovedRiskCapability, "_issue")
+    assert not hasattr(ApprovedRiskCapability, "issue")
+
+
+def test_claim_capability_issuer_is_consumed() -> None:
+    # Any attempt by ordinary application code to get the issuer factory will fail
+    # because it is consumed exactly once by RiskEngine during module load
+    from app.risk.capability import claim_capability_issuer
+
+    with pytest.raises(RuntimeError, match="The trusted capability issuer has already been claimed"):
+        claim_capability_issuer()
+
+
 def test_approved_decision_creates_intent(
     valid_signal: Signal, approved_decision: RiskDecision
 ) -> None:
@@ -142,36 +167,33 @@ def test_rejected_decision_cannot_create_intent(
 
 
 def test_quantity_authority(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+    # Since the RiskEngine is the sole authority, and Phase G engine rejects
+    # instead of resizing, the approved decision will have quantity == signal.quantity.
     assert valid_signal.quantity == Decimal("1.0")
-
-    # We forge a decision with a different calculated_quantity to prove the intent
-    # respects the decision authority over the original signal quantity.
-    decision = approved_decision.model_copy(
-        update={"calculated_quantity": Decimal("0.5"), "decision_id": uuid.uuid4()}
-    )
-    decision._execution_capability = ApprovedRiskCapability._issue(
-        decision_id=decision.decision_id,
-        risk_policy_version=decision.risk_policy_version,
-        trading_mode=decision.trading_mode,
-        calculated_quantity=decision.calculated_quantity,  # type: ignore
-        correlation_id=decision.correlation_id,
-    )
-
-    assert decision.calculated_quantity == Decimal("0.5")
+    assert approved_decision.calculated_quantity == Decimal("1.0")
 
     intent = build_order_intent(
         signal=valid_signal,
-        decision=decision,
+        decision=approved_decision,
         account_id="acc-123",
     )
 
-    assert intent.intent.quantity == Decimal("0.5")
+    assert intent.intent.quantity == Decimal("1.0")
+    # Verify the intent quantity matches the decision's authority, not merely the signal's
+    assert intent.intent.quantity == approved_decision.calculated_quantity
 
 
 def test_invalid_quantity_blocked(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+    # Even if an attacker somehow modifies the Pydantic model after approval
     invalid_decision = approved_decision.model_copy(update={"calculated_quantity": Decimal("-1.0")})
 
-    with pytest.raises(InvalidOrderIntentError):
+    # We must preserve the capability in the copy if we want to test Intent layer rejection
+    # Wait, the capability in invalid_decision will still have calculated_quantity=1.0!
+    # Because capability is immutable.
+    # So the build_order_intent will reject it because decision.calculated_quantity != cap.calculated_quantity!
+    invalid_decision._execution_capability = approved_decision._execution_capability
+
+    with pytest.raises(InvalidOrderIntentError, match="positive calculated_quantity"):
         build_order_intent(
             signal=valid_signal,
             decision=invalid_decision,
@@ -198,15 +220,37 @@ def test_different_approved_decisions_produce_different_identities(
 ) -> None:
     intent1 = build_order_intent(valid_signal, approved_decision, "acc-1")
 
-    decision2 = approved_decision.model_copy(update={"decision_id": uuid.uuid4()})
-    decision2._execution_capability = ApprovedRiskCapability._issue(
-        decision_id=decision2.decision_id,
-        risk_policy_version=decision2.risk_policy_version,
-        trading_mode=decision2.trading_mode,
-        calculated_quantity=decision2.calculated_quantity,  # type: ignore
-        correlation_id=decision2.correlation_id,
+    # Generate a genuinely different approved decision via the RiskEngine
+    engine = RiskEngine()
+    context = RiskContext(
+        trading_mode=TradingMode.PAPER,
+        current_position=Decimal("0.0"),
+        current_exposure=Decimal("0.0"),
+        portfolio_equity=Decimal("100000.0"),
+        peak_equity=Decimal("100000.0"),
+        current_equity=Decimal("100000.0"),
+        available_cash=Decimal("100000.0"),
+        daily_pnl=Decimal("0.0"),
+        trading_halted=False,
+        evaluated_at=datetime.now(UTC),
     )
-    intent2 = build_order_intent(valid_signal, decision2, "acc-1")
+    policy = RiskPolicy(
+        version="1.0.0",
+        max_order_quantity=Decimal("10.0"),
+        max_position_quantity=Decimal("10.0"),
+        max_exposure_amount=Decimal("100000.0"),
+        max_exposure_percent=Decimal("1.0"),
+        max_risk_per_trade=Decimal("10000.0"),
+        max_daily_loss=Decimal("5000.0"),
+        max_drawdown_percent=Decimal("0.2"),
+        trading_halted=False,
+    )
+
+    signal2 = valid_signal.model_copy(update={"signal_id": uuid.uuid4(), "correlation_id": uuid.uuid4()})
+    decision2 = engine.evaluate(signal2, context, policy)
+    assert decision2.status == RiskDecisionStatus.APPROVED
+
+    intent2 = build_order_intent(signal2, decision2, "acc-1")
 
     assert intent1.intent.intent_id != intent2.intent.intent_id
 

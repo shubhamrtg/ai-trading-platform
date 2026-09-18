@@ -22,11 +22,11 @@ Phase H Persistence Semantics:
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.schemas.signal import Signal
     from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column
@@ -42,6 +42,7 @@ from app.models.enums import (
     SignalType,
     TimeInForce,
 )
+
 
 class SignalModel(Base):
     """A strategy-generated trading signal. A proposal, NOT an executable order."""

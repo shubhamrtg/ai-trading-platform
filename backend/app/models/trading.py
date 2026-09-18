@@ -10,12 +10,23 @@ Design decisions:
 - correlation_id links all objects in a single trading decision chain.
 - Foreign keys enforce the mandatory pipeline relationships.
 - Order is self-contained (denormalized from OrderIntent) for operational queries.
+
+Phase H Persistence Semantics:
+- Current domain fields (e.g., Signal.order_type, RiskDecision.trading_mode) are required for executable/current records.
+- Historical pre-Phase-H records may have NULL values because those facts did not exist historically.
+- NULL historical values are preserved rather than invented in the database.
+- Incomplete historical records cannot enter the executable OrderIntent pipeline, as they fail conversion in `to_domain` with HistoricalDataIncompleteError.
+- Migration backfills Signal.order_type from OrderIntent deterministically. Ambiguous mappings (multiple intents with different order types) fail closed and leave the Signal.order_type as NULL.
 """
 
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.schemas.signal import Signal
+    from app.schemas.risk import RiskDecision
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column
@@ -31,7 +42,6 @@ from app.models.enums import (
     SignalType,
     TimeInForce,
 )
-
 
 class SignalModel(Base):
     """A strategy-generated trading signal. A proposal, NOT an executable order."""
@@ -55,10 +65,23 @@ class SignalModel(Base):
     proposed_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
 
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     rationale: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    def to_domain(self) -> "Signal":
+        from app.models.base import HistoricalDataIncompleteError
+        from app.schemas.signal import Signal
+        if self.order_type is None:
+            raise HistoricalDataIncompleteError("Legacy Signal lacks order_type")
+        if self.quantity is None:
+            raise HistoricalDataIncompleteError("Legacy Signal lacks quantity")
+
+        data = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        data["metadata"] = data.pop("metadata_json", {})
+        return Signal.model_validate(data)
 
 
 class AIAssessmentModel(Base):
@@ -99,8 +122,20 @@ class RiskDecisionModel(Base):
     calculated_risk: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     calculated_quantity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     risk_limit_applied: Mapped[str | None] = mapped_column(String, nullable=True)
+    risk_policy_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    def to_domain(self) -> "RiskDecision":
+        from app.models.base import HistoricalDataIncompleteError
+        from app.schemas.risk import RiskDecision
+        if self.trading_mode is None:
+            raise HistoricalDataIncompleteError("Legacy RiskDecision lacks trading_mode")
+        if self.risk_policy_version is None:
+            raise HistoricalDataIncompleteError("Legacy RiskDecision lacks risk_policy_version")
+
+        data = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        return RiskDecision.model_validate(data)
 
 
 class OrderIntentModel(Base):

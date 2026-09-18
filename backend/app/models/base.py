@@ -10,6 +10,10 @@ from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
+class HistoricalDataIncompleteError(ValueError):
+    """Raised when a legacy ORM model lacks required fields to become a current domain object."""
+
+
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models.
 

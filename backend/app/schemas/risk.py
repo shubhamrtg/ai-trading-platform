@@ -58,7 +58,7 @@ class RiskDecision(BaseModel):
 
     timestamp: datetime = Field(..., description="UTC time of the decision")
 
-    _execution_capability: Any = PrivateAttr(default=None)
+    _provenance_signature: Any = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_decision_consistency(self) -> "RiskDecision":

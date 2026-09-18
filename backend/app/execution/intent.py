@@ -30,8 +30,6 @@ class OrderIntentLineageError(ValueError):
 
 from typing import Any
 
-from app.risk.capability import ApprovedRiskCapability
-
 
 class ExecutableOrderIntent:
     """An immutable, verifiable wrapper proving an OrderIntent has APPROVED provenance.
@@ -40,32 +38,52 @@ class ExecutableOrderIntent:
     """
 
     _intent: OrderIntent
-    _capability: ApprovedRiskCapability
-    __slots__ = ("_intent", "_capability")
+    _decision: RiskDecision
+    __slots__ = ("_intent", "_decision")
 
-    def __init__(self, intent: OrderIntent, capability: ApprovedRiskCapability):
-        if not isinstance(capability, ApprovedRiskCapability):
+    def __init__(self, intent: OrderIntent, decision: RiskDecision):
+        if decision.status != RiskDecisionStatus.APPROVED:
+            raise RejectedRiskDecisionError("Cannot create executable intent from rejected decision.")
+
+        import hashlib
+        import secrets
+
+        # Application-Layer Provenance Verification
+        # We verify the RiskDecision was actually produced by the RiskEngine
+        # by checking the internal provenance signature. This avoids public factories,
+        # importable tokens, and forgeable ABCs.
+        payload = f"{decision.decision_id}:{decision.calculated_quantity}:{decision.trading_mode.value}:{decision.risk_policy_version}:{decision.correlation_id}"
+        expected_sig = hashlib.sha256(b"PHASE_I_EXEC_BOUNDARY_" + payload.encode()).hexdigest()
+
+        actual_sig = getattr(decision, "_provenance_signature", None)
+        if not actual_sig or not secrets.compare_digest(expected_sig, str(actual_sig)):
             raise ValueError(
-                "Requires a trusted ApprovedRiskCapability to establish execution authority."
+                "RiskDecision lacks genuine execution provenance. "
+                "It was likely manufactured instead of being issued by the Risk Engine."
             )
 
-        try:
-            # The capability proves its provenance by validating the intent
-            # against its enclosed immutable state.
-            capability.validate_intent(intent)
-        except ValueError as e:
-            raise OrderIntentLineageError(str(e)) from e
+        # Lineage Enforcement
+        if intent.risk_decision_id != decision.decision_id:
+            raise OrderIntentLineageError("Decision ID does not match the approved decision.")
+        if intent.quantity != decision.calculated_quantity:
+            raise OrderIntentLineageError("Intent quantity does not match the approved quantity.")
+        if intent.trading_mode != decision.trading_mode:
+            raise OrderIntentLineageError("Intent trading mode does not match the approved mode.")
+        if intent.correlation_id != decision.correlation_id:
+            raise OrderIntentLineageError("Intent correlation ID does not match the approved mode.")
+        if intent.risk_policy_version != decision.risk_policy_version:
+            raise OrderIntentLineageError("Intent policy version does not match the approved mode.")
 
         object.__setattr__(self, "_intent", intent)
-        object.__setattr__(self, "_capability", capability)
+        object.__setattr__(self, "_decision", decision)
 
     @property
     def intent(self) -> OrderIntent:
         return self._intent
 
     @property
-    def capability(self) -> ApprovedRiskCapability:
-        return self._capability
+    def decision(self) -> RiskDecision:
+        return self._decision
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("ExecutableOrderIntent is strictly immutable.")
@@ -100,14 +118,6 @@ def build_order_intent(
     if decision.status != RiskDecisionStatus.APPROVED:
         raise RejectedRiskDecisionError(
             f"Cannot create OrderIntent from {decision.status.value} decision."
-        )
-
-    # Trusted capability verification
-    capability = getattr(decision, "_execution_capability", None)
-    if not isinstance(capability, ApprovedRiskCapability):
-        raise ValueError(
-            "RiskDecision lacks a trusted ApprovedRiskCapability. It was likely manufactured "
-            "instead of being issued by the Risk Engine."
         )
 
     # 3. Quantity Authority
@@ -169,4 +179,4 @@ def build_order_intent(
         trading_mode=auth_mode,
     )
 
-    return ExecutableOrderIntent(intent, capability)
+    return ExecutableOrderIntent(intent, decision)

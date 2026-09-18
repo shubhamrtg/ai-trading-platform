@@ -103,15 +103,17 @@ def test_adversarial_forged_decision_rejected(valid_signal: Signal) -> None:
 
 
 def test_direct_capability_construction_fails() -> None:
-    with pytest.raises(TypeError, match="ApprovedRiskCapability cannot be instantiated directly"):
-        ApprovedRiskCapability(
-            decision_id=uuid.uuid4(),
-            risk_policy_version="1.0.0",
-            trading_mode=TradingMode.PAPER,
-            calculated_quantity=Decimal("1.0"),
-            correlation_id=uuid.uuid4()
-        )
+    # Cannot instantiate ABC directly
+    with pytest.raises(TypeError, match="Can't instantiate abstract class ApprovedRiskCapability"):
+        ApprovedRiskCapability()
 
+
+def test_adversarial_object_new_forgery_rejected(valid_signal: Signal) -> None:
+    # Adversary tries to bypass __init__ using object.__new__
+    # Because ApprovedRiskCapability is an abstract base class with abstract methods,
+    # even object.__new__ will reject instantiation!
+    with pytest.raises(TypeError, match="Can't instantiate abstract class ApprovedRiskCapability"):
+        object.__new__(ApprovedRiskCapability)
 
 def test_no_public_capability_issuance_api() -> None:
     # Ensure there is no _issue method on ApprovedRiskCapability

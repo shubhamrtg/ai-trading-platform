@@ -219,13 +219,27 @@ class RiskEngine:
         )
 
         from app.risk.capability import ApprovedRiskCapability
+        from app.schemas.order import OrderIntent
 
-        cap = object.__new__(ApprovedRiskCapability)
-        object.__setattr__(cap, "_decision_id", decision.decision_id)
-        object.__setattr__(cap, "_risk_policy_version", decision.risk_policy_version)
-        object.__setattr__(cap, "_trading_mode", decision.trading_mode)
-        object.__setattr__(cap, "_calculated_quantity", decision.calculated_quantity)
-        object.__setattr__(cap, "_correlation_id", decision.correlation_id)
+        # Lock the approved state into the local closure scope
+        approved_decision_id = decision.decision_id
+        approved_quantity = decision.calculated_quantity
+        approved_policy_version = decision.risk_policy_version
+        approved_trading_mode = decision.trading_mode
+        approved_correlation_id = decision.correlation_id
 
-        decision._execution_capability = cap
+        class _RiskEngineIssuedCapability(ApprovedRiskCapability):
+            def validate_intent(self, intent: OrderIntent) -> None:
+                if intent.risk_decision_id != approved_decision_id:
+                    raise ValueError("Execution authority provenance mismatch: decision_id")
+                if intent.quantity != approved_quantity:
+                    raise ValueError("Execution authority provenance mismatch: quantity")
+                if intent.risk_policy_version != approved_policy_version:
+                    raise ValueError("Execution authority provenance mismatch: policy_version")
+                if intent.trading_mode != approved_trading_mode:
+                    raise ValueError("Execution authority provenance mismatch: trading_mode")
+                if intent.correlation_id != approved_correlation_id:
+                    raise ValueError("Execution authority provenance mismatch: correlation_id")
+
+        decision._execution_capability = _RiskEngineIssuedCapability()
         return decision

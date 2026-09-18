@@ -1,56 +1,17 @@
-import uuid
-from decimal import Decimal
-from typing import Any
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from app.config.settings import TradingMode
+if TYPE_CHECKING:
+    from app.schemas.order import OrderIntent
 
-class ApprovedRiskCapability:
-    """Trusted capability representing an approved risk decision.
-
-    Can only be instantiated by the Risk Engine. This establishes an unforgeable
-    application-layer trust boundary preventing callers from manually manufacturing
-    execution authority via `RiskDecision(status=APPROVED)`.
+class ApprovedRiskCapability(ABC):
     """
-
-    _decision_id: uuid.UUID
-    _risk_policy_version: str
-    _trading_mode: TradingMode
-    _calculated_quantity: Decimal
-    _correlation_id: uuid.UUID
-
-    __slots__ = (
-        "_decision_id",
-        "_risk_policy_version",
-        "_trading_mode",
-        "_calculated_quantity",
-        "_correlation_id",
-    )
-
-    def __new__(cls, *args: Any, **kwargs: Any) -> "ApprovedRiskCapability":
-        raise TypeError(
-            "ApprovedRiskCapability cannot be instantiated directly. "
-            "Execution authority is issued exclusively by the RiskEngine."
-        )
-
-    @property
-    def decision_id(self) -> uuid.UUID:
-        return self._decision_id
-
-    @property
-    def risk_policy_version(self) -> str:
-        return self._risk_policy_version
-
-    @property
-    def trading_mode(self) -> TradingMode:
-        return self._trading_mode
-
-    @property
-    def calculated_quantity(self) -> Decimal:
-        return self._calculated_quantity
-
-    @property
-    def correlation_id(self) -> uuid.UUID:
-        return self._correlation_id
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError("ApprovedRiskCapability is strictly immutable.")
+    Application-layer trust boundary for execution authority.
+    The concrete capability is securely enclosed inside the RiskEngine
+    evaluation path. It cannot be manufactured by arbitrary callers.
+    """
+    
+    @abstractmethod
+    def validate_intent(self, intent: 'OrderIntent') -> None:
+        """Validates the intent against the approved immutable risk state."""
+        raise NotImplementedError

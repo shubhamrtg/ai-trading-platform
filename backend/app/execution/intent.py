@@ -49,16 +49,12 @@ class ExecutableOrderIntent:
                 "Requires a trusted ApprovedRiskCapability to establish execution authority."
             )
 
-        if intent.risk_decision_id != capability.decision_id:
-            raise OrderIntentLineageError("Decision ID does not match the capability.")
-        if intent.quantity != capability.calculated_quantity:
-            raise OrderIntentLineageError(
-                "Intent quantity does not match the approved capability quantity."
-            )
-        if intent.trading_mode != capability.trading_mode:
-            raise OrderIntentLineageError(
-                "Intent trading mode does not match the approved capability trading mode."
-            )
+        try:
+            # The capability proves its provenance by validating the intent
+            # against its enclosed immutable state.
+            capability.validate_intent(intent)
+        except ValueError as e:
+            raise OrderIntentLineageError(str(e)) from e
 
         object.__setattr__(self, "_intent", intent)
         object.__setattr__(self, "_capability", capability)

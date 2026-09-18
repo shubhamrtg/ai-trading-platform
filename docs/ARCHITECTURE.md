@@ -156,6 +156,14 @@ Deterministic engine with final trade authority. Enforces:
 
 Routes validated order intents to the appropriate broker adapter.
 
+**Phase I Implementation**:
+- **Simulated Execution Only**: The Execution Engine operates strictly in-process and in-memory.
+- **No Broker Integration**: Does NOT connect to any real broker, exchange, or live trading system.
+- **No Paper Broker**: Does NOT use any external paper trading APIs.
+- **Deterministic**: Converts valid OrderIntents into ExecutionResults deterministically.
+- **Fail-closed Validation**: Rejects unsupported order types, missing limit prices, negative quantities, and live trading modes.
+- **Lineage Preservation**: Maintains traceability back to RiskDecision, Signal, and Correlation ID.
+
 ### Broker Abstraction
 
 ```python

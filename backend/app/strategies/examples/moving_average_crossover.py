@@ -6,7 +6,7 @@ rather than generate profit. It proves parameters, context history, and SignalDr
 
 from decimal import Decimal
 
-from app.models.enums import OrderSide, SignalType
+from app.models.enums import OrderSide, OrderType, SignalType
 from app.schemas.market_data import Candle
 from app.strategies.sdk import (
     SignalDraft,
@@ -83,6 +83,7 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 symbol=candle.symbol,
                 timeframe=candle.timeframe,
                 side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
                 signal_type=SignalType.ENTRY,
                 quantity=Decimal("1.0"),
                 confidence=0.8,
@@ -96,6 +97,7 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 symbol=candle.symbol,
                 timeframe=candle.timeframe,
                 side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
                 signal_type=SignalType.ENTRY,  # Simplified: just an entry
                 quantity=Decimal("1.0"),
                 confidence=0.8,

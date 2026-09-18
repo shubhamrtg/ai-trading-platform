@@ -1,14 +1,15 @@
+from app.config.settings import TradingMode
+
 """Tests for the deterministic Risk Engine (Phase G)."""
 
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-
-from app.models.enums import OrderSide, RiskDecisionStatus, RiskRejectionCode, SignalType
+from app.models.enums import OrderSide, OrderType, RiskDecisionStatus, RiskRejectionCode, SignalType
 from app.risk.engine import RiskEngine
-from app.schemas.risk import RiskContext, RiskDecision, RiskPolicy
+from app.schemas.risk import RiskContext, RiskPolicy
 from app.schemas.signal import Signal
 
 
@@ -24,7 +25,7 @@ def base_policy() -> RiskPolicy:
         max_daily_loss=Decimal("2000.0"),
         max_drawdown_percent=Decimal("0.1"),
         trading_halted=False,
-    )
+            )
 
 
 @pytest.fixture
@@ -38,6 +39,7 @@ def base_context() -> RiskContext:
         peak_equity=Decimal("20000.0"),
         current_equity=Decimal("20000.0"),
         trading_halted=False,
+        trading_mode=TradingMode.PAPER,
         evaluated_at=datetime.now(UTC),
     )
 
@@ -53,6 +55,7 @@ def base_signal() -> Signal:
         timeframe="1h",
         timestamp=datetime.now(UTC),
         side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
         signal_type=SignalType.ENTRY,
         quantity=Decimal("1.0"),
         proposed_entry_price=Decimal("100.0"),
@@ -67,10 +70,10 @@ def test_determinism(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     dec1 = engine.evaluate(base_signal, base_context, base_policy)
     dec2 = engine.evaluate(base_signal, base_context, base_policy)
-    
+
     assert dec1.decision_id == dec2.decision_id
     assert dec1.timestamp == dec2.timestamp == base_context.evaluated_at
     assert dec1.risk_policy_version == base_policy.version
@@ -134,7 +137,7 @@ def test_max_position(
     engine = RiskEngine()
     # Context has 10 current position. Max is 50.
     policy = base_policy.model_copy(update={"max_order_quantity": Decimal("100.0")})
-    
+
     # Below limit (10 + 39 = 49)
     base_signal_below = base_signal.model_copy(update={"quantity": Decimal("39.0")})
     assert engine.evaluate(base_signal_below, base_context, policy).status == RiskDecisionStatus.APPROVED
@@ -161,11 +164,11 @@ def test_exposure_buy(
 ) -> None:
     engine = RiskEngine()
     policy = base_policy.model_copy(update={"max_order_quantity": Decimal("1000.0"), "max_position_quantity": Decimal("1000.0"), "max_risk_per_trade": Decimal("0.0")})
-    
+
     # Current exposure = 1000
     # Max exposure = 10000
     # Equity = 20000, 50% = 10000
-    
+
     # BUY 90 @ 100 -> 9000. Total = 10000. (Exactly at limit)
     sig_at = base_signal.model_copy(update={"quantity": Decimal("90.0")})
     assert engine.evaluate(sig_at, base_context, policy).status == RiskDecisionStatus.APPROVED
@@ -182,17 +185,17 @@ def test_exposure_sell_reducing(
 ) -> None:
     engine = RiskEngine()
     policy = base_policy.model_copy(update={"max_order_quantity": Decimal("1000.0"), "max_position_quantity": Decimal("1000.0"), "max_risk_per_trade": Decimal("0.0")})
-    
+
     # Sell should reduce exposure and not be blocked by exposure limit
     # Suppose current exposure is 15000 (already above limit 10000)
     ctx_over = base_context.model_copy(update={"current_exposure": Decimal("15000.0"), "current_position": Decimal("150.0")})
-    
+
     # A BUY would fail because it increases exposure over 10000
     sig_buy = base_signal.model_copy(update={"quantity": Decimal("1.0")})
     dec_buy = engine.evaluate(sig_buy, ctx_over, policy)
     assert dec_buy.status == RiskDecisionStatus.REJECTED
     assert RiskRejectionCode.MAX_EXPOSURE_EXCEEDED in dec_buy.rejection_codes
-    
+
     # A SELL reduces exposure, should pass (SELL 50 @ 100 -> 5000)
     sig_sell = base_signal.model_copy(update={"side": OrderSide.SELL, "quantity": Decimal("50.0")})
     dec_sell = engine.evaluate(sig_sell, ctx_over, policy)
@@ -204,7 +207,7 @@ def test_exposure_missing_price(
 ) -> None:
     engine = RiskEngine()
     policy = base_policy.model_copy(update={"max_risk_per_trade": Decimal("0.0")})
-    
+
     sig_no_price = base_signal.model_copy(update={"proposed_entry_price": None})
     decision_np = engine.evaluate(sig_no_price, base_context, policy)
     assert decision_np.status == RiskDecisionStatus.REJECTED
@@ -215,7 +218,7 @@ def test_trade_risk(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # Below maximum: price=100, stop=50 -> risk=50 * 9 = 450 <= 500
     sig_below = base_signal.model_copy(update={"quantity": Decimal("9.0"), "stop_loss": Decimal("50.0")})
     assert engine.evaluate(sig_below, base_context, base_policy).status == RiskDecisionStatus.APPROVED
@@ -236,7 +239,7 @@ def test_daily_loss(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # Safe daily P&L (-1999)
     ctx_safe = base_context.model_copy(update={"daily_pnl": Decimal("-1999.0")})
     assert engine.evaluate(base_signal, ctx_safe, base_policy).status == RiskDecisionStatus.APPROVED
@@ -258,7 +261,7 @@ def test_drawdown(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # Safe drawdown: peak=20k, current=19k -> 5% (limit 10%)
     ctx_safe = base_context.model_copy(update={"current_equity": Decimal("19000.0")})
     assert engine.evaluate(base_signal, ctx_safe, base_policy).status == RiskDecisionStatus.APPROVED
@@ -280,7 +283,7 @@ def test_kill_switch_deduplication(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # Via Context
     ctx_halted = base_context.model_copy(update={"trading_halted": True})
     dec_ctx = engine.evaluate(base_signal, ctx_halted, base_policy)
@@ -304,14 +307,14 @@ def test_multiple_violations(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # Trigger quantity limit, exposure limit, and drawdown limit
     sig = base_signal.model_copy(update={"quantity": Decimal("1000000.0")})
     ctx = base_context.model_copy(update={"current_equity": Decimal("1000.0")})
-    
+
     decision = engine.evaluate(sig, ctx, base_policy)
     assert decision.status == RiskDecisionStatus.REJECTED
-    
+
     assert RiskRejectionCode.MAX_ORDER_QUANTITY_EXCEEDED in decision.rejection_codes
     assert RiskRejectionCode.MAX_POSITION_EXCEEDED in decision.rejection_codes
     assert RiskRejectionCode.MAX_EXPOSURE_EXCEEDED in decision.rejection_codes
@@ -323,13 +326,13 @@ def test_immutability(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     sig_before = base_signal.model_copy()
     ctx_before = base_context.model_copy()
     pol_before = base_policy.model_copy()
-    
+
     engine.evaluate(base_signal, base_context, base_policy)
-    
+
     assert base_signal == sig_before
     assert base_context == ctx_before
     assert base_policy == pol_before
@@ -338,8 +341,9 @@ def test_immutability(
 def test_architectural_no_execution_dependency() -> None:
     # Prove engine has no execution dependencies
     import inspect
+
     import app.risk.engine
-    
+
     source = inspect.getsource(app.risk.engine)
     assert "broker" not in source.lower()
     assert "execute" not in source.lower() # no execution
@@ -352,10 +356,10 @@ def test_determinism_exposure_changes_identity(
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"current_exposure": Decimal("10000.0")})
     ctx2 = base_context.model_copy(update={"current_exposure": Decimal("20000.0")})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_portfolio_equity_changes_identity(
@@ -364,10 +368,10 @@ def test_determinism_portfolio_equity_changes_identity(
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"portfolio_equity": Decimal("100000.0")})
     ctx2 = base_context.model_copy(update={"portfolio_equity": Decimal("200000.0")})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_daily_pnl_changes_identity(
@@ -376,10 +380,10 @@ def test_determinism_daily_pnl_changes_identity(
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"daily_pnl": Decimal("100.0")})
     ctx2 = base_context.model_copy(update={"daily_pnl": Decimal("-100.0")})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_position_changes_identity(
@@ -388,10 +392,10 @@ def test_determinism_position_changes_identity(
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"current_position": Decimal("10.0")})
     ctx2 = base_context.model_copy(update={"current_position": Decimal("20.0")})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_policy_configuration_changes_identity(
@@ -401,10 +405,10 @@ def test_determinism_policy_configuration_changes_identity(
     # Keep version same, change exposure amount
     pol1 = base_policy.model_copy(update={"max_exposure_amount": Decimal("10000.0")})
     pol2 = base_policy.model_copy(update={"max_exposure_amount": Decimal("20000.0")})
-    
+
     dec1 = engine.evaluate(base_signal, base_context, pol1)
     dec2 = engine.evaluate(base_signal, base_context, pol2)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_timestamp_changes_identity(
@@ -414,51 +418,51 @@ def test_determinism_timestamp_changes_identity(
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at})
     ctx2 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at + timedelta(seconds=1)})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_none_versus_zero(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     sig1 = base_signal.model_copy(update={"proposed_entry_price": None})
     sig2 = base_signal.model_copy(update={"proposed_entry_price": Decimal("0.0")})
-    
+
     dec1 = engine.evaluate(sig1, base_context, base_policy)
     dec2 = engine.evaluate(sig2, base_context, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_string_delimiter_safety(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     # We can inject delimiter characters into string fields like strategy_id or version
     # Since we are using JSON with strict schemas now, `strategy_id="A|B", strategy_version="C"`
     # should be fundamentally distinct from `strategy_id="A", strategy_version="B|C"`
     sig1 = base_signal.model_copy(update={"strategy_id": "A|B", "strategy_version": "C"})
     sig2 = base_signal.model_copy(update={"strategy_id": "A", "strategy_version": "B|C"})
-    
+
     dec1 = engine.evaluate(sig1, base_context, base_policy)
     dec2 = engine.evaluate(sig2, base_context, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 
 def test_determinism_decimal_representation_safety(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    
+
     ctx1 = base_context.model_copy(update={"current_exposure": Decimal("100.00")})
     ctx2 = base_context.model_copy(update={"current_exposure": Decimal("100.01")})
-    
+
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
-    
+
     assert dec1.decision_id != dec2.decision_id
 

@@ -49,6 +49,7 @@ class SignalModel(Base):
     timeframe: Mapped[str] = mapped_column(String)
 
     side: Mapped[OrderSide] = mapped_column(String)
+    order_type: Mapped[OrderType] = mapped_column(String, default=OrderType.MARKET)
     signal_type: Mapped[SignalType] = mapped_column(String)
 
     proposed_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
@@ -90,6 +91,7 @@ class RiskDecisionModel(Base):
     signal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("signals.signal_id"), index=True)
 
     status: Mapped[RiskDecisionStatus] = mapped_column(String)
+    trading_mode: Mapped[str] = mapped_column(String, default='PAPER')
 
     rejection_code: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -119,6 +121,7 @@ class OrderIntentModel(Base):
     symbol: Mapped[str] = mapped_column(String, index=True)
 
     side: Mapped[OrderSide] = mapped_column(String)
+    order_type: Mapped[OrderType] = mapped_column(String, default=OrderType.MARKET)
     order_type: Mapped[OrderType] = mapped_column(String)
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8))
 
@@ -149,6 +152,7 @@ class OrderModel(Base):
     # Denormalized from OrderIntent for self-contained operational queries
     symbol: Mapped[str] = mapped_column(String, index=True)
     side: Mapped[OrderSide] = mapped_column(String)
+    order_type: Mapped[OrderType] = mapped_column(String, default=OrderType.MARKET)
     order_type: Mapped[OrderType] = mapped_column(String)
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8))
 

@@ -65,8 +65,9 @@ class CandleRepository:
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> bool:
         """Check if the requested range is completely covered by a prior successful fetch."""
-        from app.models.market_data import MarketDataCoverageModel
         from datetime import UTC
+
+        from app.models.market_data import MarketDataCoverageModel
 
         # We need a coverage record that completely encloses the requested range
         # Select deterministically: shortest enclosing interval first
@@ -109,7 +110,7 @@ class CandleRepository:
             min_ts = min_ts.replace(tzinfo=UTC)
         if max_ts.tzinfo is None:
             max_ts = max_ts.replace(tzinfo=UTC)
-            
+
         rec_start = record.start_time
         rec_end = record.end_time
         if rec_start.tzinfo is None:
@@ -134,8 +135,9 @@ class CandleRepository:
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> None:
         """Mark a range as covered after a successful fetch, storing the authoritative timestamp fingerprint."""
-        from app.models.market_data import MarketDataCoverageModel
         from datetime import UTC
+
+        from app.models.market_data import MarketDataCoverageModel
 
         # Read the authoritative persisted candles for the coverage range
         ts_stmt = select(CandleModel.timestamp).where(

@@ -21,7 +21,7 @@ class RiskEngine:
     def _generate_decision_id(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> uuid.UUID:
         """Generate a deterministic UUID representing the exact evaluation state."""
         import json
-        
+
         state = {
             "signal": {
                 "signal_id": str(signal.signal_id),
@@ -40,6 +40,7 @@ class RiskEngine:
                 "daily_pnl": str(context.daily_pnl),
                 "peak_equity": str(context.peak_equity),
                 "current_equity": str(context.current_equity),
+                "trading_mode": context.trading_mode.value,
                 "trading_halted": context.trading_halted,
                 "evaluated_at": context.evaluated_at.isoformat(),
             },
@@ -55,7 +56,7 @@ class RiskEngine:
                 "trading_halted": policy.trading_halted,
             }
         }
-        
+
         canonical_string = json.dumps(state, sort_keys=True, separators=(',', ':'))
         return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
@@ -119,12 +120,12 @@ class RiskEngine:
                 )
         else:
             order_notional = signal.quantity * signal.proposed_entry_price
-            
+
             if signal.side == OrderSide.BUY:
                 resulting_exposure = context.current_exposure + order_notional
             else:
                 resulting_exposure = max(Decimal("0.0"), context.current_exposure - order_notional)
-            
+
             if resulting_exposure > policy.max_exposure_amount:
                 rejection_codes.append(RiskRejectionCode.MAX_EXPOSURE_EXCEEDED)
                 rejection_reasons.append(
@@ -172,7 +173,7 @@ class RiskEngine:
                 rejection_reasons.append(
                     f"Current drawdown {drawdown:.4f} reaches or exceeds max_drawdown_percent {policy.max_drawdown_percent}"
                 )
-                
+
         # Deterministic Decision ID Generation
         # Use UUID5 based on stable inputs
         deterministic_id = self._generate_decision_id(signal, context, policy)
@@ -184,6 +185,7 @@ class RiskEngine:
                 signal_id=signal.signal_id,
                 status=RiskDecisionStatus.REJECTED,
                 risk_policy_version=policy.version,
+                trading_mode=context.trading_mode,
                 rejection_codes=rejection_codes,
                 rejection_reasons=rejection_reasons,
                 calculated_quantity=None,
@@ -203,6 +205,7 @@ class RiskEngine:
             signal_id=signal.signal_id,
             status=RiskDecisionStatus.APPROVED,
             risk_policy_version=policy.version,
+            trading_mode=context.trading_mode,
             calculated_quantity=signal.quantity,
             calculated_risk=calculated_risk,
             risk_limit_applied=None,

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import OrderSide, SignalType
+from app.models.enums import OrderSide, OrderType, SignalType
 
 
 class Signal(BaseModel):
@@ -31,6 +31,7 @@ class Signal(BaseModel):
     timeframe: str = Field(..., description="Timeframe the strategy was operating on")
 
     side: OrderSide = Field(..., description="BUY or SELL")
+    order_type: OrderType = Field(..., description="Canonical order type")
     signal_type: SignalType = Field(..., description="ENTRY or EXIT")
     quantity: Decimal = Field(..., gt=0, description="Proposed quantity to trade")
 

@@ -52,7 +52,7 @@ class OrderIntent(BaseModel):
 
     idempotency_key: str = Field(..., description="Strict key to prevent duplicate execution")
     creation_timestamp: datetime = Field(..., description="UTC time created")
-    
+
     # Traceability additions
     risk_policy_version: str | None = None
     strategy_id: str | None = None

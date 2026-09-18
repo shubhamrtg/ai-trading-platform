@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import OrderSide, SignalType
+from app.models.enums import OrderSide, OrderType, SignalType
 from app.schemas.market_data import Candle
 
 
@@ -31,6 +31,7 @@ class SignalDraft(BaseModel):
     symbol: str
     timeframe: str
     side: OrderSide
+    order_type: OrderType
     signal_type: SignalType
     quantity: Decimal = Field(..., gt=0)
     proposed_entry_price: Decimal | None = None

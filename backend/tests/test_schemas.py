@@ -14,6 +14,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from app.config.settings import TradingMode
 from app.models.enums import (
     AIRecommendation,
     OrderSide,
@@ -119,6 +120,7 @@ class TestEnumSerialization:
             timestamp=datetime.now(UTC),
             timeframe="1h",
             side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
             signal_type=SignalType.ENTRY,
             quantity=Decimal("1.0"),
         )
@@ -230,6 +232,7 @@ class TestTimezoneAwareness:
             timestamp=ts,
             timeframe="1h",
             side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
             signal_type=SignalType.ENTRY,
             quantity=Decimal("1.0"),
         )
@@ -322,6 +325,7 @@ class TestSignal:
             timestamp=datetime.now(UTC),
             timeframe="5m",
             side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
             signal_type=SignalType.ENTRY,
             quantity=Decimal("1.0"),
         )
@@ -355,6 +359,7 @@ class TestSignal:
             timestamp=datetime.now(UTC),
             timeframe="1h",
             side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
             signal_type=SignalType.ENTRY,
             quantity=Decimal("1.0"),
         )
@@ -376,6 +381,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.APPROVED,
             risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("1.5"),
             timestamp=datetime.now(UTC),
         )
@@ -389,6 +395,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.REJECTED,
             risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
             rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
             rejection_reasons=["Total exposure would exceed 50% of equity"],
             timestamp=datetime.now(UTC),
@@ -405,6 +412,7 @@ class TestRiskDecision:
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.REJECTED,
                 risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 calculated_risk=None,
@@ -420,6 +428,7 @@ class TestRiskDecision:
                 signal_id=uuid4(),
                 status=RiskDecisionStatus.APPROVED,
                 risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
                 rejection_codes=[RiskRejectionCode.MAX_EXPOSURE_EXCEEDED],
                 calculated_quantity=Decimal("1.0"),
                 timestamp=datetime.now(UTC),
@@ -432,6 +441,7 @@ class TestRiskDecision:
             signal_id=uuid4(),
             status=RiskDecisionStatus.MODIFIED,
             risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("0.5"),
             risk_limit_applied="MAX_POSITION_SIZE",
             timestamp=datetime.now(UTC),
@@ -839,6 +849,7 @@ class TestDomainSeparation:
             "timestamp": datetime.now(UTC).isoformat(),
             "timeframe": "1h",
             "side": "BUY",
+            "order_type": "MARKET",
             "signal_type": "ENTRY",
             "quantity": "1.0",
             "state": "CREATED",  # This is an Order field, not a Signal field
@@ -871,6 +882,7 @@ class TestCorrelationID:
             timestamp=datetime.now(UTC),
             timeframe="1h",
             side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
             signal_type=SignalType.ENTRY,
             quantity=Decimal("1.0"),
         )
@@ -881,6 +893,7 @@ class TestCorrelationID:
             signal_id=sig_id,
             status=RiskDecisionStatus.APPROVED,
             risk_policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
             calculated_quantity=Decimal("1.0"),
             timestamp=datetime.now(UTC),
         )

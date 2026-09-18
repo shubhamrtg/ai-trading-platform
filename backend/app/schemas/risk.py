@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.config.settings import TradingMode
 from app.models.enums import RiskDecisionStatus, RiskRejectionCode
 
 
@@ -29,6 +30,7 @@ class RiskDecision(BaseModel):
 
     status: RiskDecisionStatus = Field(..., description="APPROVED, REJECTED, or MODIFIED")
     risk_policy_version: str = Field(..., description="Version of the RiskPolicy used")
+    trading_mode: TradingMode = Field(..., description="The trading mode under which this decision was made")
 
     # If REJECTED, why?
     rejection_codes: list[RiskRejectionCode] = Field(
@@ -97,4 +99,5 @@ class RiskContext(BaseModel):
     peak_equity: Decimal = Field(..., gt=0)
     current_equity: Decimal = Field(..., gt=0)
     trading_halted: bool = Field(default=False)
+    trading_mode: TradingMode = Field(..., description="The authoritative trading mode for this evaluation")
     evaluated_at: datetime

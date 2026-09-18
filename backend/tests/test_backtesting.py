@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.schemas import BacktestRequest
-from app.models.enums import BacktestStatus, OrderSide, StrategyStatus
+from app.models.enums import BacktestStatus, OrderSide, OrderType, StrategyStatus
 from app.schemas.market_data import Candle
 from app.strategies.repository import StrategyVersionRepository
 from app.strategies.service import StrategyExecutionService
@@ -563,6 +563,7 @@ def test_simulator_level_accounting() -> None:
         timeframe="1d",
         timestamp=candle_1.timestamp,
         side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
         signal_type=SignalType.ENTRY,
         quantity=Decimal("1.0"),
         confidence=1.0,
@@ -603,6 +604,7 @@ def test_simulator_level_accounting() -> None:
         timeframe="1d",
         timestamp=candle_2.timestamp,
         side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
         signal_type=SignalType.EXIT,
         quantity=quantity,
         confidence=1.0,

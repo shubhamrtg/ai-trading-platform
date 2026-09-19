@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({
 
 // Mock API calls
 vi.mock('../lib/api', async (importOriginal) => {
-  const actual = await importOriginal() as any;
+  const actual = await importOriginal<typeof import('../lib/api')>();
   return {
     ...actual,
     getSystemStatus: vi.fn(),
@@ -120,7 +120,7 @@ describe('BacktestForm Integration Tests', () => {
 
   it('strategy selected -> versions loaded -> timeframes & parameters displayed -> request contains parameters', async () => {
     vi.mocked(api.getStrategy).mockResolvedValue(mockStrategyDetail);
-    vi.mocked(api.createBacktest).mockResolvedValue({ run_id: 'test-run-123' } as any);
+    vi.mocked(api.createBacktest).mockResolvedValue({ run_id: 'test-run-123' } as unknown as Awaited<ReturnType<typeof api.createBacktest>>);
 
     render(<BacktestForm strategies={mockStrategies} />);
     

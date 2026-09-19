@@ -202,7 +202,7 @@ export default function BacktestForm({
       enum?: string[] | number[];
     };
     
-    let fields: Array<{name: string, type: string, description?: string, required?: boolean, min?: number, max?: number, enum?: any[]}> = [];
+    let fields: Array<{name: string, type: string, description?: string, required?: boolean, min?: number, max?: number, enum?: string[] | number[]}> = [];
 
     if (schema.properties) {
       const props = schema.properties as Record<string, SchemaProperty>;

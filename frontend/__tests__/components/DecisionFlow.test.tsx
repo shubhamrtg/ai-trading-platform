@@ -14,10 +14,11 @@ describe('DecisionFlow', () => {
     expect(screen.getByText('Execution Result')).toBeInTheDocument();
   });
 
-  it('displays safety notes', () => {
+  it('renders architecture overview title', () => {
     render(<DecisionFlow />);
-    expect(screen.getByText(/final authority/i)).toBeInTheDocument();
-    expect(screen.getByText(/simulation-only/i)).toBeInTheDocument();
+    expect(screen.getByText('Architecture Overview')).toBeInTheDocument();
+    expect(screen.getByText(/This diagram shows the architectural pipeline/i)).toBeInTheDocument();
+    expect(screen.getByText(/It is not a runtime execution record/i)).toBeInTheDocument();
   });
 
   it('indicates UI cannot initiate trades', () => {

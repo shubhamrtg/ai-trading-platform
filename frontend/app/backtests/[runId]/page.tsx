@@ -113,7 +113,7 @@ export default function BacktestDetailPage() {
           </div>
 
           {activeTab === 'results' && <BacktestMetrics backtest={backtest} />}
-          {activeTab === 'equity' && <EquityCurve data={backtest.equity_curve} />}
+          {activeTab === 'equity' && <EquityCurve data={backtest.equity_curve} timeframe={backtest.timeframe} />}
           {activeTab === 'trades' && <TradesTable trades={backtest.trades} />}
           {activeTab === 'flow' && <DecisionFlow />}
         </>

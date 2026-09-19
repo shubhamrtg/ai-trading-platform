@@ -6,14 +6,15 @@ import StatCard from '@/components/Dashboard/StatCard';
 import LoadingState from '@/components/ui/LoadingState';
 import ErrorState from '@/components/ui/ErrorState';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { getSystemStatus, getStrategies, getBacktests } from '@/lib/api';
-import type { SystemStatus, StrategyListItem, BacktestListPaginated } from '@/types/api';
+import { getSystemStatus, getHealth, getStrategies, getBacktests } from '@/lib/api';
+import type { SystemStatus, HealthResponse, StrategyListItem, BacktestListPaginated } from '@/types/api';
 import { formatDateTime } from '@/lib/utils';
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [strategies, setStrategies] = useState<StrategyListItem[]>([]);
   const [backtests, setBacktests] = useState<BacktestListPaginated | null>(null);
 
@@ -21,16 +22,19 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      getSystemStatus().catch(() => null),
-      getStrategies().catch(() => []),
-      getBacktests(5, 0).catch(() => ({ items: [], total: 0 })),
-    ]).then(([s, strats, bt]) => {
+      getSystemStatus(),
+      getHealth(),
+      getStrategies(),
+      getBacktests(5, 0),
+    ]).then(([s, h, strats, bt]) => {
       setStatus(s);
+      setHealth(h);
       setStrategies(strats as StrategyListItem[]);
       setBacktests(bt as BacktestListPaginated);
       setLoading(false);
-    }).catch(() => {
-      setError('Failed to load dashboard data.');
+    }).catch((err) => {
+      console.error(err);
+      setError('Failed to load dashboard data. The backend might be unavailable.');
       setLoading(false);
     });
   };
@@ -63,8 +67,9 @@ export default function DashboardPage() {
         <StatCard label="Strategies" value={strategies.length} />
         <StatCard label="Total Backtests" value={backtests?.total ?? 0} />
         <StatCard
-          label="System Status"
-          value={status?.configuration_valid ? 'Healthy' : 'Check Config'}
+          label="System Health"
+          value={health ? (health.status.charAt(0).toUpperCase() + health.status.slice(1)) : 'Unknown'}
+          sublabel={status?.configuration_valid ? 'Config Valid' : 'Config Invalid'}
         />
       </div>
 

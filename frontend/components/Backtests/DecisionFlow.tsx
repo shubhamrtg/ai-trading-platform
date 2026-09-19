@@ -32,17 +32,17 @@ export default function DecisionFlow() {
     },
     {
       name: 'Execution Result',
-      description: 'Deterministic fill result. In simulation mode, orders are filled completely at the requested price.',
+      description: 'Deterministic fill result.',
       color: 'bg-green-100 border-green-400',
     },
   ];
 
   return (
     <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold mb-2">Decision & Execution Flow</h3>
+      <h3 className="text-lg font-semibold mb-2">Architecture Overview</h3>
       <p className="text-sm text-gray-500 mb-6">
         This diagram shows the architectural pipeline that every trading decision follows.
-        In backtest mode, the simplified simulation path is used. The UI is read-only
+        It is not a runtime execution record for this backtest. The UI is read-only
         and cannot initiate, modify, or override any stage.
       </p>
 

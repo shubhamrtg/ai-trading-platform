@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import type { BacktestCreateRequest, StrategyListItem } from '@/types/api';
+import type { BacktestCreateRequest, StrategyListItem, StrategyDetail, StrategyVersion } from '@/types/api';
 import { createBacktest } from '@/lib/api/backtests';
+import { getStrategy } from '@/lib/api/strategies';
 import { ApiError } from '@/lib/api/client';
 
 export default function BacktestForm({
@@ -15,11 +16,14 @@ export default function BacktestForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyDetail | null>(null);
+  const [loadingStrategy, setLoadingStrategy] = useState(false);
+
   const [formData, setFormData] = useState({
     strategy_id: '',
     strategy_version: '',
     symbol: '',
-    timeframe: '1h',
+    timeframe: '',
     start_time: '',
     end_time: '',
     initial_capital: '100000',
@@ -27,45 +31,105 @@ export default function BacktestForm({
     slippage_pct: '0',
   });
 
+  const [parameters, setParameters] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!formData.strategy_id) {
+      setSelectedStrategy(null);
+      setFormData(prev => ({ ...prev, strategy_version: '', timeframe: '' }));
+      setParameters({});
+      return;
+    }
+
+    setLoadingStrategy(true);
+    getStrategy(formData.strategy_id)
+      .then(detail => {
+        setSelectedStrategy(detail);
+        // Auto-select first ACTIVE version if any
+        const activeVersions = detail.versions.filter(v => v.status === 'ACTIVE');
+        const firstActive = activeVersions.length > 0 ? activeVersions[0] : detail.versions[0];
+        
+        setFormData(prev => ({ 
+          ...prev, 
+          strategy_version: firstActive?.version || '',
+          timeframe: firstActive?.supported_timeframes?.[0] || '1h'
+        }));
+      })
+      .catch(err => {
+        console.error(err);
+        setError('Failed to load strategy details.');
+      })
+      .finally(() => {
+        setLoadingStrategy(false);
+      });
+  }, [formData.strategy_id]);
+
+  const selectedVersion: StrategyVersion | undefined = selectedStrategy?.versions.find(
+    v => v.version === formData.strategy_version
+  );
+
+  // Initialize parameters when version changes
+  useEffect(() => {
+    if (selectedVersion?.parameters_schema) {
+      const initialParams: Record<string, string> = {};
+      const schema = selectedVersion.parameters_schema;
+      
+      // Handle both flat dict and JSON schema style
+      if (schema.properties) {
+        const props = schema.properties as Record<string, any>;
+        Object.keys(props).forEach(key => {
+          initialParams[key] = props[key].default !== undefined ? String(props[key].default) : '';
+        });
+      } else {
+        Object.keys(schema).forEach(key => {
+          initialParams[key] = String(schema[key]);
+        });
+      }
+      setParameters(initialParams);
+    } else {
+      setParameters({});
+    }
+  }, [selectedVersion]);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
     setError(null);
+  };
+
+  const handleParameterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type, checked } = e.target;
+    setParameters(prev => ({ 
+      ...prev, 
+      [name]: type === 'checkbox' ? String(checked) : value 
+    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    // Basic client-side validation
-    if (!formData.strategy_id) {
-      setError('Strategy is required.');
+    if (!formData.strategy_id || !formData.strategy_version || !formData.symbol || !formData.timeframe) {
+      setError('Please fill in all required fields.');
       return;
     }
-    if (!formData.strategy_version) {
-      setError('Strategy version is required.');
-      return;
-    }
-    if (!formData.symbol) {
-      setError('Symbol is required.');
-      return;
-    }
-    if (!formData.start_time || !formData.end_time) {
-      setError('Start and end dates are required.');
-      return;
-    }
+
     if (new Date(formData.start_time) >= new Date(formData.end_time)) {
       setError('Start date must be before end date.');
-      return;
-    }
-    const capital = parseFloat(formData.initial_capital);
-    if (isNaN(capital) || capital <= 0) {
-      setError('Initial capital must be a positive number.');
       return;
     }
 
     setIsSubmitting(true);
 
     try {
+      // Parse parameters to correct types (fallback to number if parsable)
+      const parsedParameters: Record<string, any> = {};
+      Object.entries(parameters).forEach(([k, v]) => {
+        if (v === 'true') parsedParameters[k] = true;
+        else if (v === 'false') parsedParameters[k] = false;
+        else if (!isNaN(Number(v)) && v.trim() !== '') parsedParameters[k] = Number(v);
+        else parsedParameters[k] = v;
+      });
+
       const request: BacktestCreateRequest = {
         strategy_id: formData.strategy_id,
         strategy_version: formData.strategy_version,
@@ -73,10 +137,14 @@ export default function BacktestForm({
         timeframe: formData.timeframe,
         start_time: new Date(formData.start_time).toISOString(),
         end_time: new Date(formData.end_time).toISOString(),
-        initial_capital: capital,
+        initial_capital: parseFloat(formData.initial_capital),
         commission_pct: parseFloat(formData.commission_pct) || 0,
         slippage_pct: parseFloat(formData.slippage_pct) || 0,
       };
+
+      if (Object.keys(parsedParameters).length > 0) {
+        request.parameters = parsedParameters;
+      }
 
       const result = await createBacktest(request);
       router.push(`/backtests/${result.run_id}`);
@@ -90,6 +158,67 @@ export default function BacktestForm({
     }
   };
 
+  const renderParameterInputs = () => {
+    if (!selectedVersion?.parameters_schema) return null;
+    const schema = selectedVersion.parameters_schema;
+    let fields: Array<{name: string, type: string, description?: string, required?: boolean}> = [];
+
+    if (schema.properties) {
+      const props = schema.properties as Record<string, any>;
+      fields = Object.keys(props).map(k => ({
+        name: k,
+        type: props[k].type === 'integer' || props[k].type === 'number' ? 'number' : props[k].type === 'boolean' ? 'checkbox' : 'text',
+        description: props[k].description,
+        required: schema.required ? schema.required.includes(k) : false,
+      }));
+    } else {
+      fields = Object.keys(schema).map(k => ({
+        name: k,
+        type: typeof schema[k] === 'number' ? 'number' : typeof schema[k] === 'boolean' ? 'checkbox' : 'text',
+        required: true,
+      }));
+    }
+
+    if (fields.length === 0) return null;
+
+    return (
+      <div className="bg-gray-50 p-4 rounded-md border border-gray-200 space-y-4">
+        <h3 className="font-medium text-sm text-gray-900 border-b pb-2">Strategy Parameters</h3>
+        <div className="grid grid-cols-2 gap-4">
+          {fields.map(field => (
+            <div key={field.name}>
+              <label className="block text-sm font-medium text-gray-700">
+                {field.name} {field.required && '*'}
+              </label>
+              {field.type === 'checkbox' ? (
+                <input
+                  type="checkbox"
+                  name={field.name}
+                  checked={parameters[field.name] === 'true'}
+                  onChange={handleParameterChange}
+                  className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+              ) : (
+                <input
+                  type={field.type}
+                  name={field.name}
+                  value={parameters[field.name] || ''}
+                  onChange={handleParameterChange}
+                  step={field.type === 'number' ? 'any' : undefined}
+                  required={field.required}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
+                />
+              )}
+              {field.description && (
+                <p className="mt-1 text-xs text-gray-500">{field.description}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <form onSubmit={handleSubmit} className="bg-white shadow rounded-lg p-6 max-w-2xl">
       <h2 className="text-xl font-semibold mb-6">Create New Backtest</h2>
@@ -100,40 +229,55 @@ export default function BacktestForm({
         </div>
       )}
 
-      <div className="space-y-4">
-        <div>
-          <label htmlFor="strategy_id" className="block text-sm font-medium text-gray-700">Strategy</label>
-          <select
-            id="strategy_id"
-            name="strategy_id"
-            value={formData.strategy_id}
-            onChange={handleChange}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
-            required
-          >
-            <option value="">Select a strategy…</option>
-            {strategies.map((s) => (
-              <option key={s.strategy_id} value={s.strategy_id}>
-                {s.name} ({s.strategy_id})
-              </option>
-            ))}
-          </select>
+      <div className="space-y-6">
+        {/* Strategy Selection */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="strategy_id" className="block text-sm font-medium text-gray-700">Strategy</label>
+            <select
+              id="strategy_id"
+              name="strategy_id"
+              value={formData.strategy_id}
+              onChange={handleChange}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
+              required
+            >
+              <option value="">Select a strategy…</option>
+              {strategies.map((s) => (
+                <option key={s.strategy_id} value={s.strategy_id}>
+                  {s.name} ({s.strategy_id})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="strategy_version" className="block text-sm font-medium text-gray-700">
+              Version {loadingStrategy && <span className="text-gray-400 text-xs ml-2">Loading…</span>}
+            </label>
+            <select
+              id="strategy_version"
+              name="strategy_version"
+              value={formData.strategy_version}
+              onChange={handleChange}
+              disabled={!selectedStrategy || selectedStrategy.versions.length === 0}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2 disabled:bg-gray-100"
+              required
+            >
+              <option value="">Select a version…</option>
+              {selectedStrategy?.versions.map((v) => (
+                <option key={v.version} value={v.version}>
+                  {v.version} ({v.status})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div>
-          <label htmlFor="strategy_version" className="block text-sm font-medium text-gray-700">Version</label>
-          <input
-            type="text"
-            id="strategy_version"
-            name="strategy_version"
-            value={formData.strategy_version}
-            onChange={handleChange}
-            placeholder="e.g., 1.0.0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
-            required
-          />
-        </div>
+        {/* Dynamic Parameters */}
+        {renderParameterInputs()}
 
+        {/* Backtest Configuration */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label htmlFor="symbol" className="block text-sm font-medium text-gray-700">Symbol</label>
@@ -155,15 +299,18 @@ export default function BacktestForm({
               name="timeframe"
               value={formData.timeframe}
               onChange={handleChange}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
+              disabled={!selectedVersion || selectedVersion.supported_timeframes.length === 0}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2 disabled:bg-gray-100"
+              required
             >
-              <option value="1m">1 Minute</option>
-              <option value="5m">5 Minutes</option>
-              <option value="15m">15 Minutes</option>
-              <option value="1h">1 Hour</option>
-              <option value="4h">4 Hours</option>
-              <option value="1d">1 Day</option>
+              <option value="">Select timeframe…</option>
+              {selectedVersion?.supported_timeframes.map(tf => (
+                <option key={tf} value={tf}>{tf}</option>
+              ))}
             </select>
+            {selectedVersion && selectedVersion.supported_timeframes.length === 0 && (
+              <p className="text-xs text-amber-600 mt-1">Warning: Strategy version has no supported timeframes.</p>
+            )}
           </div>
         </div>
 
@@ -238,11 +385,18 @@ export default function BacktestForm({
         </div>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-8 pt-4 border-t border-gray-200 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+        >
+          Cancel
+        </button>
         <button
           type="submit"
-          disabled={isSubmitting}
-          className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium"
+          disabled={isSubmitting || !selectedVersion || selectedVersion.status !== 'ACTIVE'}
+          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           {isSubmitting ? 'Running Backtest…' : 'Run Backtest'}
         </button>

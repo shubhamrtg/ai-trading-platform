@@ -100,7 +100,7 @@ export default function BacktestForm({
       const schema = selectedVersion.parameters_schema;
       
       if (schema.properties) {
-        const props = schema.properties as Record<string, any>;
+        const props = schema.properties as Record<string, { default?: unknown }>;
         Object.keys(props).forEach(key => {
           initialParams[key] = props[key].default !== undefined ? String(props[key].default) : '';
         });
@@ -151,7 +151,7 @@ export default function BacktestForm({
     setIsSubmitting(true);
 
     try {
-      const parsedParameters: Record<string, any> = {};
+      const parsedParameters: Record<string, unknown> = {};
       Object.entries(parameters).forEach(([k, v]) => {
         if (v === 'true') parsedParameters[k] = true;
         else if (v === 'false') parsedParameters[k] = false;
@@ -190,19 +190,37 @@ export default function BacktestForm({
   const renderParameterInputs = () => {
     if (!selectedVersion?.parameters_schema) return null;
     const schema = selectedVersion.parameters_schema;
+    
+    type SchemaProperty = {
+      type?: string;
+      description?: string;
+      default?: unknown;
+      minimum?: number;
+      maximum?: number;
+      exclusiveMinimum?: number;
+      exclusiveMaximum?: number;
+      enum?: string[] | number[];
+    };
+    
     let fields: Array<{name: string, type: string, description?: string, required?: boolean, min?: number, max?: number, enum?: any[]}> = [];
 
     if (schema.properties) {
-      const props = schema.properties as Record<string, any>;
+      const props = schema.properties as Record<string, SchemaProperty>;
       fields = Object.keys(props).map(k => {
         const p = props[k];
-        let min = p.minimum !== undefined ? p.minimum : p.exclusiveMinimum !== undefined ? p.exclusiveMinimum + (p.type === 'integer' ? 1 : 0.000001) : undefined;
-        let max = p.maximum !== undefined ? p.maximum : p.exclusiveMaximum !== undefined ? p.exclusiveMaximum - (p.type === 'integer' ? 1 : 0.000001) : undefined;
+        let min = p.minimum;
+        let max = p.maximum;
+        
+        if (p.type === 'integer') {
+          if (min === undefined && p.exclusiveMinimum !== undefined) min = p.exclusiveMinimum + 1;
+          if (max === undefined && p.exclusiveMaximum !== undefined) max = p.exclusiveMaximum - 1;
+        }
+
         return {
           name: k,
           type: p.type === 'integer' || p.type === 'number' ? 'number' : p.type === 'boolean' ? 'checkbox' : 'text',
           description: p.description,
-          required: schema.required ? schema.required.includes(k) : false,
+          required: schema.required ? (schema.required as string[]).includes(k) : false,
           min: min,
           max: max,
           enum: p.enum,
@@ -211,7 +229,7 @@ export default function BacktestForm({
     } else {
       fields = Object.keys(schema).map(k => ({
         name: k,
-        type: typeof schema[k] === 'number' ? 'number' : typeof schema[k] === 'boolean' ? 'checkbox' : 'text',
+        type: typeof (schema as Record<string, unknown>)[k] === 'number' ? 'number' : typeof (schema as Record<string, unknown>)[k] === 'boolean' ? 'checkbox' : 'text',
         required: true,
       }));
     }

@@ -252,11 +252,30 @@ describe('BacktestForm Integration Tests', () => {
     vi.mocked(api.getStrategy).mockResolvedValue(mockStrategyMultiVersion);
     render(<BacktestForm strategies={[{ ...mockStrategies[0], strategy_id: 'strat_2' }]} />);
     
+    // Select strategy
     fireEvent.change(screen.getByLabelText(/Strategy/i), { target: { value: 'strat_2' } });
     await waitFor(() => expect(api.getStrategy).toHaveBeenCalledWith('strat_2'));
 
-    // Ensure we can't submit if timeframe is somehow out of sync (although UI prevents it)
-    // We just verify the DOM validation. If required, it wouldn't let it submit natively, but we also manually check in handleSubmit.
+    // Fill the rest of the form to valid state
+    fireEvent.change(screen.getByLabelText(/Symbol/i), { target: { value: 'BTC-USD' } });
+    fireEvent.change(screen.getByLabelText(/Start Date/i), { target: { value: '2023-01-01T00:00' } });
+    fireEvent.change(screen.getByLabelText(/End Date/i), { target: { value: '2023-01-02T00:00' } });
+
+    // Version 1.0.0 is selected by default (supports '1h', '4h')
+    // Force an invalid timeframe value into the controlled state
+    const timeframeSelect = screen.getByLabelText(/Timeframe/i);
+    fireEvent.change(timeframeSelect, { target: { value: 'invalid_tf' } });
+
+    // Try to submit
+    fireEvent.click(screen.getByText(/Run Backtest/i));
+
+    await waitFor(() => {
+      // createBacktest should NOT have been called
+      expect(api.createBacktest).not.toHaveBeenCalled();
+      
+      // The validation error should be displayed
+      expect(screen.getByText(/Selected timeframe is not supported by the selected strategy version/i)).toBeInTheDocument();
+    });
   });
 
   it('Test D - ACTIVE version restriction: non-ACTIVE versions are not selectable', async () => {

@@ -45,15 +45,26 @@ export default function BacktestForm({
     getStrategy(formData.strategy_id)
       .then(detail => {
         setSelectedStrategy(detail);
-        // Auto-select first ACTIVE version if any
         const activeVersions = detail.versions.filter(v => v.status === 'ACTIVE');
-        const firstActive = activeVersions.length > 0 ? activeVersions[0] : detail.versions[0];
+        const firstActive = activeVersions.length > 0 ? activeVersions[0] : undefined;
         
-        setFormData(prev => ({ 
-          ...prev, 
-          strategy_version: firstActive?.version || '',
-          timeframe: firstActive?.supported_timeframes?.[0] || '1h'
-        }));
+        setFormData(prev => {
+          let newTimeframe = prev.timeframe;
+          if (firstActive) {
+            if (firstActive.supported_timeframes.length === 0) {
+              newTimeframe = '';
+            } else if (!firstActive.supported_timeframes.includes(prev.timeframe)) {
+              newTimeframe = firstActive.supported_timeframes[0];
+            }
+          } else {
+            newTimeframe = '';
+          }
+          return { 
+            ...prev, 
+            strategy_version: firstActive?.version || '',
+            timeframe: newTimeframe
+          };
+        });
       })
       .catch(err => {
         console.error(err);
@@ -68,13 +79,26 @@ export default function BacktestForm({
     v => v.version === formData.strategy_version
   );
 
+  // Timeframe consistency when version changes manually
+  useEffect(() => {
+    if (selectedVersion) {
+      setFormData(prev => {
+        if (selectedVersion.supported_timeframes.length === 0) {
+          if (prev.timeframe !== '') return { ...prev, timeframe: '' };
+        } else if (!selectedVersion.supported_timeframes.includes(prev.timeframe)) {
+          return { ...prev, timeframe: selectedVersion.supported_timeframes[0] };
+        }
+        return prev;
+      });
+    }
+  }, [selectedVersion]);
+
   // Initialize parameters when version changes
   useEffect(() => {
     if (selectedVersion?.parameters_schema) {
       const initialParams: Record<string, string> = {};
       const schema = selectedVersion.parameters_schema;
       
-      // Handle both flat dict and JSON schema style
       if (schema.properties) {
         const props = schema.properties as Record<string, any>;
         Object.keys(props).forEach(key => {
@@ -96,8 +120,9 @@ export default function BacktestForm({
     setError(null);
   };
 
-  const handleParameterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
+  const handleParameterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    const checked = (e.target as HTMLInputElement).checked;
     setParameters(prev => ({ 
       ...prev, 
       [name]: type === 'checkbox' ? String(checked) : value 
@@ -113,6 +138,11 @@ export default function BacktestForm({
       return;
     }
 
+    if (!selectedVersion || !selectedVersion.supported_timeframes.includes(formData.timeframe)) {
+      setError('Selected timeframe is not supported by the selected strategy version.');
+      return;
+    }
+
     if (new Date(formData.start_time) >= new Date(formData.end_time)) {
       setError('Start date must be before end date.');
       return;
@@ -121,7 +151,6 @@ export default function BacktestForm({
     setIsSubmitting(true);
 
     try {
-      // Parse parameters to correct types (fallback to number if parsable)
       const parsedParameters: Record<string, any> = {};
       Object.entries(parameters).forEach(([k, v]) => {
         if (v === 'true') parsedParameters[k] = true;
@@ -161,16 +190,24 @@ export default function BacktestForm({
   const renderParameterInputs = () => {
     if (!selectedVersion?.parameters_schema) return null;
     const schema = selectedVersion.parameters_schema;
-    let fields: Array<{name: string, type: string, description?: string, required?: boolean}> = [];
+    let fields: Array<{name: string, type: string, description?: string, required?: boolean, min?: number, max?: number, enum?: any[]}> = [];
 
     if (schema.properties) {
       const props = schema.properties as Record<string, any>;
-      fields = Object.keys(props).map(k => ({
-        name: k,
-        type: props[k].type === 'integer' || props[k].type === 'number' ? 'number' : props[k].type === 'boolean' ? 'checkbox' : 'text',
-        description: props[k].description,
-        required: schema.required ? schema.required.includes(k) : false,
-      }));
+      fields = Object.keys(props).map(k => {
+        const p = props[k];
+        let min = p.minimum !== undefined ? p.minimum : p.exclusiveMinimum !== undefined ? p.exclusiveMinimum + (p.type === 'integer' ? 1 : 0.000001) : undefined;
+        let max = p.maximum !== undefined ? p.maximum : p.exclusiveMaximum !== undefined ? p.exclusiveMaximum - (p.type === 'integer' ? 1 : 0.000001) : undefined;
+        return {
+          name: k,
+          type: p.type === 'integer' || p.type === 'number' ? 'number' : p.type === 'boolean' ? 'checkbox' : 'text',
+          description: p.description,
+          required: schema.required ? schema.required.includes(k) : false,
+          min: min,
+          max: max,
+          enum: p.enum,
+        };
+      });
     } else {
       fields = Object.keys(schema).map(k => ({
         name: k,
@@ -190,7 +227,20 @@ export default function BacktestForm({
               <label className="block text-sm font-medium text-gray-700">
                 {field.name} {field.required && '*'}
               </label>
-              {field.type === 'checkbox' ? (
+              {field.enum ? (
+                <select
+                  name={field.name}
+                  value={parameters[field.name] || ''}
+                  onChange={handleParameterChange}
+                  required={field.required}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
+                >
+                  <option value="">Select...</option>
+                  {field.enum.map(opt => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              ) : field.type === 'checkbox' ? (
                 <input
                   type="checkbox"
                   name={field.name}
@@ -205,6 +255,8 @@ export default function BacktestForm({
                   value={parameters[field.name] || ''}
                   onChange={handleParameterChange}
                   step={field.type === 'number' ? 'any' : undefined}
+                  min={field.min}
+                  max={field.max}
                   required={field.required}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2"
                 />
@@ -218,6 +270,8 @@ export default function BacktestForm({
       </div>
     );
   };
+
+  const activeVersions = selectedStrategy?.versions.filter(v => v.status === 'ACTIVE') || [];
 
   return (
     <form onSubmit={handleSubmit} className="bg-white shadow rounded-lg p-6 max-w-2xl">
@@ -260,12 +314,12 @@ export default function BacktestForm({
               name="strategy_version"
               value={formData.strategy_version}
               onChange={handleChange}
-              disabled={!selectedStrategy || selectedStrategy.versions.length === 0}
+              disabled={!selectedStrategy || activeVersions.length === 0}
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border p-2 disabled:bg-gray-100"
               required
             >
               <option value="">Select a version…</option>
-              {selectedStrategy?.versions.map((v) => (
+              {activeVersions.map((v) => (
                 <option key={v.version} value={v.version}>
                   {v.version} ({v.status})
                 </option>

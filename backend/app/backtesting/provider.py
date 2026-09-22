@@ -30,29 +30,35 @@ class DummyMarketDataProvider(MarketDataProvider):
     async def get_candles(
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> AsyncGenerator[Candle, None]:
-        """Generate 10 deterministic daily candles for testing."""
+        """Generate deterministic candles for the requested date range."""
         current_time = start_time
+        
+        # Determine timedelta based on timeframe string (basic support)
+        if timeframe == "1h":
+            delta = timedelta(hours=1)
+        elif timeframe == "1m":
+            delta = timedelta(minutes=1)
+        else:
+            delta = timedelta(days=1) # default to 1d
 
-        # We'll just generate candles up to end_time or max 10 to keep tests fast
-        for i in range(10):
-            if current_time > end_time:
-                break
-
-            # Intentionally spike the close on the 4th candle for MA crossovers in tests
-            close_price = Decimal("110.0") if i == 3 else Decimal("100.0")
-
+        i = 0
+        while current_time <= end_time and i < 10000: # cap at 10,000 to prevent runaway loops
+            # Provide some simulated wave pattern for prices so MAs actually cross over
+            import math
+            wave = Decimal(math.sin(i / 5.0) * 10)
+            
             yield Candle(
                 symbol=symbol,
                 timeframe=timeframe,
                 timestamp=current_time,
-                open=Decimal("100.0"),
-                high=Decimal("110.0"),
-                low=Decimal("90.0"),
-                close=close_price,
+                open=Decimal("100.0") + wave,
+                high=Decimal("110.0") + wave,
+                low=Decimal("90.0") + wave,
+                close=Decimal("105.0") + wave,
                 volume=Decimal("1000.0"),
                 vwap=None,
                 trades=None,
             )
 
-            # For 1d timeframe
-            current_time += timedelta(days=1)
+            current_time += delta
+            i += 1

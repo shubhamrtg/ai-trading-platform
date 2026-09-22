@@ -14,11 +14,22 @@ from app.schemas.api_backtesting import (
 )
 
 
-# Since we don't have DI framework setup here fully yet, we will just stub the dependency getter
-# This usually comes from the app dependencies
-def get_backtest_service() -> BacktestApplicationService:
-    """Dependency provider for BacktestApplicationService. Overridden in tests."""
-    raise NotImplementedError("Dependency injection not configured for production yet.")
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.backtesting.repository import BacktestRunRepository
+from app.strategies.repository import StrategyVersionRepository
+from app.backtesting.engine import BacktestEngine
+from app.strategies.service import StrategyExecutionService
+from app.backtesting.provider import DummyMarketDataProvider
+
+def get_backtest_service(db_session: AsyncSession = Depends(get_db)) -> BacktestApplicationService:
+    """Dependency provider for BacktestApplicationService."""
+    repo = BacktestRunRepository(db_session)
+    strat_repo = StrategyVersionRepository(db_session)
+    strat_service = StrategyExecutionService(strat_repo)
+    engine = BacktestEngine(strat_service)
+    provider = DummyMarketDataProvider()
+    return BacktestApplicationService(repo, strat_repo, engine, provider)
 
 
 router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])

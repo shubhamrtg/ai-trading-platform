@@ -61,7 +61,20 @@ class StrategyRunner:
         # 1. Parameter Validation
         try:
             # Pydantic handles type coercion, required fields, constraints
-            self.parameters = self.strategy_class.parameters_schema.model_validate(parameters_dict)
+            # We must use model_validate_json so that Pydantic's JSON parser allows 
+            # converting JSON numbers/strings to Decimals when strict=True is enabled.
+            import json
+            from decimal import Decimal
+            
+            class DecimalEncoder(json.JSONEncoder):
+                def default(self, obj: Any) -> Any:
+                    if isinstance(obj, Decimal):
+                        return str(obj)
+                    return super().default(obj)
+                    
+            self.parameters = self.strategy_class.parameters_schema.model_validate_json(
+                json.dumps(parameters_dict, cls=DecimalEncoder)
+            )
         except Exception as e:
             raise StrategyValidationError(f"Invalid strategy parameters: {e}") from e
 

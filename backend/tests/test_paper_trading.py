@@ -408,3 +408,84 @@ async def test_kill_switch_race(db_session: AsyncSession, mock_adapter, setup_se
     # Tx C should fail
     res = await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("49.0"), Decimal("10.0"))
     assert res is False
+
+@pytest.mark.asyncio
+async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setup_session):
+    session_id, worker_id, account_id = setup_session
+    class CustomMockAdapter:
+        async def get_quote(self, symbol):
+            from decimal import Decimal
+            return Decimal("100.0"), Decimal("10.0")
+    orchestrator = PaperOrchestrator(db_session, CustomMockAdapter())
+
+    from unittest.mock import MagicMock
+
+    from app.schemas.market_data import Candle
+    from app.schemas.paper import SizingResult
+    from app.schemas.risk import RiskDecision, RiskDecisionStatus
+
+    candle = Candle(
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        open=Decimal("100.0"),
+        high=Decimal("110.0"),
+        low=Decimal("90.0"),
+        close=Decimal("100.0"),
+        volume=Decimal("1.0")
+    )
+
+    signal = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("1.0"),
+        metadata={"source": "test"}
+    )
+
+    runner = MagicMock()
+    runner.process_candle.return_value = signal
+
+    position_sizer = MagicMock()
+    position_sizer.calculate_size.return_value = SizingResult(quantity=Decimal("2.0"), reason="Test", is_valid=True)
+
+    risk_engine = MagicMock()
+    risk_decision = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=signal.correlation_id,
+        signal_id=signal.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("2.0"),
+        calculated_risk=Decimal("10.0"),
+        authorized_cash_requirement=Decimal("250.0"),
+        risk_policy_version="1.0",
+        timestamp=_now()
+    )
+    risk_engine.evaluate.return_value = risk_decision
+    risk_policy = MagicMock()
+
+    await orchestrator.acquire_lease(session_id, worker_id)
+
+    await orchestrator.run_pipeline_for_candle(
+        session_id=session_id,
+        worker_id=worker_id,
+        candle=candle,
+        runner=runner,
+        position_sizer=position_sizer,
+        risk_engine=risk_engine,
+        risk_policy=risk_policy,
+        is_complete=True
+    )
+
+    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == signal.correlation_id))
+    order = order.scalar_one_or_none()
+    assert order is not None
+    assert order.state == OrderState.FILLED.value

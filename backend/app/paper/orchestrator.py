@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.transitions import validate_order_transition
-from app.models.enums import OrderState, PaperSessionState, PositionState
+from app.models.enums import OrderState, PaperSessionState
 from app.models.paper import CashReservationModel, PaperSessionModel
 from app.models.portfolio import PortfolioSnapshotModel, PositionModel
 from app.models.trading import (
@@ -19,9 +19,10 @@ from app.models.trading import (
     OrderIntentModel,
     OrderModel,
     RiskDecisionModel,
+    SignalModel,
 )
 from app.paper.adapter import PaperExecutionAdapter
-from app.schemas.risk import RiskDecision
+from app.schemas.risk import RiskDecision, RiskDecisionStatus
 from app.schemas.signal import Signal
 
 
@@ -52,6 +53,67 @@ class PaperOrchestrator:
 
         return True
 
+    async def acquire_lease(self, session_id: uuid.UUID, worker_id: uuid.UUID) -> bool:
+        """Acquire or reclaim a worker lease."""
+        session = await self.db.execute(
+            select(PaperSessionModel)
+            .where(PaperSessionModel.session_id == session_id)
+            .with_for_update()
+        )
+        session = session.scalar_one_or_none()
+        if not session:
+            return False
+
+        if session.worker_owner_id is None or not await self.check_lease(session, session.worker_owner_id):
+            session.worker_owner_id = worker_id
+            session.worker_heartbeat = self._now()
+            await self.db.commit()
+            return True
+
+        if session.worker_owner_id == worker_id:
+            session.worker_heartbeat = self._now()
+            await self.db.commit()
+            return True
+
+        return False
+
+    async def renew_lease(self, session_id: uuid.UUID, worker_id: uuid.UUID) -> bool:
+        """Renew an existing worker lease."""
+        session = await self.db.execute(
+            select(PaperSessionModel)
+            .where(PaperSessionModel.session_id == session_id)
+            .with_for_update()
+        )
+        session = session.scalar_one_or_none()
+        if not session:
+            return False
+
+        if await self.check_lease(session, worker_id):
+            session.worker_heartbeat = self._now()
+            await self.db.commit()
+            return True
+
+        return False
+
+    async def release_lease(self, session_id: uuid.UUID, worker_id: uuid.UUID) -> bool:
+        """Release a worker lease if owned."""
+        session = await self.db.execute(
+            select(PaperSessionModel)
+            .where(PaperSessionModel.session_id == session_id)
+            .with_for_update()
+        )
+        session = session.scalar_one_or_none()
+        if not session:
+            return False
+
+        if session.worker_owner_id == worker_id:
+            session.worker_owner_id = None
+            session.worker_heartbeat = None
+            await self.db.commit()
+            return True
+
+        return False
+
     async def transaction_b_reserve_cash(
         self,
         session_id: uuid.UUID,
@@ -60,6 +122,16 @@ class PaperOrchestrator:
         risk_decision: RiskDecision,
     ) -> bool:
         """Transaction B: Atomically reserve cash and persist intent."""
+        # Validate RiskDecision == APPROVED (Blocker 3)
+        if risk_decision.status != RiskDecisionStatus.APPROVED:
+            await self.db.rollback()
+            return False
+
+        # Validate Lineage (Blocker 4)
+        if risk_decision.signal_id != signal.signal_id or risk_decision.correlation_id != signal.correlation_id:
+            await self.db.rollback()
+            return False
+
         # 1. Verify worker lease (assumes caller fetched session with FOR UPDATE)
         session = await self.db.execute(
             select(PaperSessionModel)
@@ -73,6 +145,7 @@ class PaperOrchestrator:
             or not await self.check_lease(session, worker_id)
             or session.state != PaperSessionState.RUNNING
         ):
+            await self.db.rollback()
             return False
 
         # 2. Fetch authoritative portfolio cash
@@ -109,10 +182,12 @@ class PaperOrchestrator:
 
         # 5. Verify authorization requirement
         if risk_decision.authorized_cash_requirement is None:
+            await self.db.rollback()
             return False
 
         if risk_decision.authorized_cash_requirement > cash_available_for_authorization:
             # Insufficient cash
+            await self.db.rollback()
             return False
 
         # 6. Atomically persist
@@ -172,6 +247,7 @@ class PaperOrchestrator:
         )
         self.db.add(order)
 
+        await self.db.commit()
         return True
 
     async def transaction_c_acknowledge(
@@ -192,6 +268,7 @@ class PaperOrchestrator:
         session = session.scalar_one_or_none()
 
         if not session or not await self.check_lease(session, worker_id):
+            await self.db.rollback()
             return False
 
         order = await self.db.execute(
@@ -201,7 +278,8 @@ class PaperOrchestrator:
 
         # Kill switch / cancellation race check!
         # If it has already moved to CANCEL_PENDING or CANCELLED, do not acknowledge.
-        if not order or order.state != OrderState.SUBMITTED:
+        if not order or order.state != "SUBMITTED":
+            await self.db.rollback()
             return False
 
         intent = await self.db.execute(
@@ -221,20 +299,22 @@ class PaperOrchestrator:
         ) + actual_execution_fees
 
         if actual_execution_cash_requirement <= reservation.authorized_cash_requirement:
-            validate_order_transition(order.state, OrderState.ACKNOWLEDGED)
-            order.state = OrderState.ACKNOWLEDGED
+            validate_order_transition(order.state, 'ACKNOWLEDGED')
+            order.state = 'ACKNOWLEDGED'
             order.execution_price = actual_execution_price
             order.execution_fee = actual_execution_fees
+            await self.db.commit()
             return True
         else:
-            validate_order_transition(order.state, OrderState.CANCEL_PENDING)
-            order.state = OrderState.CANCEL_PENDING
+            validate_order_transition(order.state, 'CANCEL_PENDING')
+            order.state = 'CANCEL_PENDING'
             await self.db.flush()
 
-            validate_order_transition(order.state, OrderState.CANCELLED)
-            order.state = OrderState.CANCELLED
+            validate_order_transition(order.state, 'CANCELLED')
+            order.state = 'CANCELLED'
             reservation.active = False
             reservation.released_timestamp = self._now()
+            await self.db.commit()
             return False
 
     async def transaction_d_fill(
@@ -252,6 +332,7 @@ class PaperOrchestrator:
         session = session.scalar_one_or_none()
 
         if not session or not await self.check_lease(session, worker_id):
+            await self.db.rollback()
             return False
 
         order = await self.db.execute(
@@ -259,7 +340,8 @@ class PaperOrchestrator:
         )
         order = order.scalar_one_or_none()
 
-        if not order or order.state != OrderState.ACKNOWLEDGED:
+        if not order or order.state != "ACKNOWLEDGED":
+            await self.db.rollback()
             return False
 
         intent = await self.db.execute(
@@ -275,6 +357,7 @@ class PaperOrchestrator:
         reservation = reservation.scalar_one()
 
         if not order.execution_price or order.execution_fee is None:
+            await self.db.rollback()
             return False
 
         actual_execution_fees = order.execution_fee
@@ -301,7 +384,7 @@ class PaperOrchestrator:
         portfolio = portfolio_snapshot.scalar_one_or_none()
 
         if not portfolio:
-            # Should not happen in a valid system since Tx B ensures cash exists
+            await self.db.rollback()
             return False
 
         position = await self.db.execute(
@@ -311,53 +394,216 @@ class PaperOrchestrator:
         )
         position = position.scalar_one_or_none()
 
-        actual_cash_spent = (order.quantity * order.execution_price) + actual_execution_fees
+        is_sell = order.side == "SELL"
 
-        if not position:
-            position = PositionModel(
-                position_id=uuid.uuid4(),
-                account_id=session.account_id,
-                symbol=order.symbol,
-                state=PositionState.OPEN,
-                side=order.side.value if hasattr(order.side, 'value') else order.side,
-                quantity=order.quantity,
-                average_entry_price=order.execution_price,
-                strategy_id=session.strategy_id,
-                entry_signal_id=intent.originating_signal_id
-            )
-            self.db.add(position)
+        if is_sell:
+            if not position or position.quantity < order.quantity:
+                # FAIL CLOSED if attempting to sell more than held
+                await self.db.rollback()
+                return False
+
+            proceeds = order.quantity * order.execution_price
+            realized_pnl = (order.execution_price - position.average_entry_price) * order.quantity
+
+            position.quantity -= order.quantity
+            if position.quantity == Decimal("0.0"):
+                position.state = "CLOSED"
+
+            new_cash = portfolio.cash + proceeds - actual_execution_fees
+            new_equity = portfolio.equity + realized_pnl - actual_execution_fees
+            new_exposure = portfolio.total_exposure - (order.quantity * position.average_entry_price)
+            new_realized = portfolio.total_realized_pnl + realized_pnl
         else:
-            old_notional = position.quantity * position.average_entry_price
-            new_notional = order.quantity * order.execution_price
-            position.quantity += order.quantity
-            if position.quantity > 0:
-                position.average_entry_price = (old_notional + new_notional) / position.quantity
+            actual_cash_spent = (order.quantity * order.execution_price) + actual_execution_fees
+
+            if not position:
+                position = PositionModel(
+                    position_id=uuid.uuid4(),
+                    account_id=session.account_id,
+                    symbol=order.symbol,
+                    state="OPEN",
+                    side=order.side,
+                    quantity=order.quantity,
+                    average_entry_price=order.execution_price,
+                    strategy_id=session.strategy_id,
+                    entry_signal_id=intent.originating_signal_id
+                )
+                self.db.add(position)
+            else:
+                old_notional = position.quantity * position.average_entry_price
+                new_notional = order.quantity * order.execution_price
+                position.quantity += order.quantity
+                if position.quantity > 0:
+                    position.average_entry_price = (old_notional + new_notional) / position.quantity
+
+            new_cash = portfolio.cash - actual_cash_spent
+            new_equity = portfolio.equity - actual_execution_fees
+            new_exposure = portfolio.total_exposure + (order.quantity * order.execution_price)
+            new_realized = portfolio.total_realized_pnl
 
         # Create new portfolio snapshot reflecting the economic commit
         new_portfolio = PortfolioSnapshotModel(
             snapshot_id=uuid.uuid4(),
             account_id=portfolio.account_id,
             timestamp=self._now(),
-            cash=portfolio.cash - actual_cash_spent,
-            available_cash=portfolio.cash - actual_cash_spent,  # Base available cash, gets modified by reservations elsewhere
-            equity=portfolio.equity - actual_execution_fees,  # Equity only drops by fee on entry
-            total_realized_pnl=portfolio.total_realized_pnl,
-            total_unrealized_pnl=portfolio.total_unrealized_pnl,
-            total_exposure=portfolio.total_exposure + (order.quantity * order.execution_price),
+            cash=new_cash,
+            available_cash=new_cash,  # Base available cash, gets modified by reservations elsewhere
+            equity=new_equity,
+            total_realized_pnl=new_realized,
+            total_unrealized_pnl=portfolio.total_unrealized_pnl, # Updated externally
+            total_exposure=new_exposure,
             reserved_capital=Decimal("0.0") # We don't maintain aggregate reserved_capital here, we compute it on the fly
         )
         self.db.add(new_portfolio)
 
-        validate_order_transition(order.state, OrderState.FILLED)
-        order.state = OrderState.FILLED
+        validate_order_transition(order.state, 'FILLED')
+        order.state = 'FILLED'
         order.filled_quantity = order.quantity
         order.average_fill_price = order.execution_price
 
         reservation.active = False
         reservation.released_timestamp = self._now()
 
+        await self.db.commit()
         return True
 
-    async def run_pipeline_for_candle(self, session_id: uuid.UUID, worker_id: uuid.UUID, candle) -> None:
-        """Helper to demonstrate full flow if needed. Real system orchestrates this externally via tasks."""
-        pass
+    async def run_pipeline_for_candle(
+        self,
+        session_id: uuid.UUID,
+        worker_id: uuid.UUID,
+        candle,
+        runner,
+        position_sizer,
+        risk_engine,
+        risk_policy,
+        is_complete: bool = True
+    ) -> None:
+        """K1 paper trading orchestration loop."""
+        if not is_complete:
+            return  # ignore
+
+        # 1. Acquire/Check lease and session state
+        session = await self.db.execute(
+            select(PaperSessionModel)
+            .where(PaperSessionModel.session_id == session_id)
+            .with_for_update()
+        )
+        session = session.scalar_one_or_none()
+        if not session or not await self.check_lease(session, worker_id):
+            # No valid lease
+            if session and session.state == PaperSessionState.RUNNING:
+                # If we don't have the lease, we shouldn't continue
+                pass
+            return
+
+        if session.state != PaperSessionState.RUNNING:
+            return
+
+        # Canonical deduplication / chronological check
+        # Fetch last processed event for this session
+        # For K1, we can store last_processed_timestamp on the session model
+        # Or we can just let StrategyRunner throw ChronologicalDataError
+
+        try:
+            signal = runner.process_candle(candle)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "out-of-order" in err_str:
+                session.state = PaperSessionState.HALTED
+                await self.db.flush()
+                return
+            elif "duplicate" in err_str:
+                return # no-op
+            elif "malformed" in err_str:
+                session.state = PaperSessionState.HALTED
+                await self.db.flush()
+                return
+            elif "stale" in err_str:
+                session.state = PaperSessionState.PAUSED
+                await self.db.flush()
+                return
+            else:
+                session.state = PaperSessionState.HALTED
+                await self.db.flush()
+                return
+
+        if not signal:
+            return
+
+        # 2. Position Sizer
+        portfolio_snapshot = await self.db.execute(
+            select(PortfolioSnapshotModel)
+            .where(PortfolioSnapshotModel.account_id == session.account_id)
+            .order_by(PortfolioSnapshotModel.timestamp.desc())
+            .limit(1)
+        )
+        portfolio = portfolio_snapshot.scalar_one_or_none()
+        if not portfolio:
+            return
+
+        pos = await self.db.execute(
+            select(PositionModel)
+            .where(PositionModel.account_id == session.account_id)
+            .where(PositionModel.symbol == signal.symbol)
+        )
+        pos = pos.scalar_one_or_none()
+        current_pos_qty = pos.quantity if pos else Decimal("0.0")
+
+        try:
+            sizing_result = position_sizer.calculate_size(
+                signal=signal,
+                portfolio_equity=portfolio.equity,
+                current_position_quantity=current_pos_qty
+            )
+            signal.quantity = sizing_result.quantity
+        except Exception:
+            return
+
+        # 3. Risk Engine
+        from app.config.settings import TradingMode
+        from app.schemas.risk import RiskContext
+        risk_context = RiskContext(
+            portfolio_equity=portfolio.equity,
+            available_cash=portfolio.available_cash,
+            current_position=current_pos_qty,
+            current_exposure=portfolio.total_exposure,
+            daily_pnl=Decimal("0.0"),
+            peak_equity=portfolio.equity,
+            current_equity=portfolio.equity,
+            trading_mode=TradingMode.PAPER,
+            evaluated_at=self._now(),
+        )
+
+        # RiskEngine is pure
+        risk_decision = risk_engine.evaluate(signal, risk_context, risk_policy)
+
+        # We must explicitly save SignalModel to satisfy FK constraints before transaction_b
+        # We convert enum values properly using mode="python"
+        self.db.add(SignalModel(**signal.model_dump(mode="python")))
+        await self.db.flush()
+
+        # 4. Cash Reservation & Order Intent (Transaction B)
+        res_b = await self.transaction_b_reserve_cash(session_id, worker_id, signal, risk_decision)
+        if not res_b:
+            return
+
+        # Fetch Order created by Tx B
+        order = await self.db.execute(
+            select(OrderModel).where(OrderModel.correlation_id == risk_decision.correlation_id)
+        )
+        order = order.scalar_one_or_none()
+        if not order:
+            return
+
+        # 5. Quote and Auth (Transaction C)
+        try:
+            quote_price, quote_fees = await self.adapter.get_quote(order.symbol)
+        except Exception:
+            return
+
+        res_c = await self.transaction_c_acknowledge(session_id, worker_id, order.order_id, quote_price, quote_fees)
+        if not res_c:
+            return
+
+        # 6. Economic Commit (Transaction D)
+        await self.transaction_d_fill(session_id, worker_id, order.order_id)

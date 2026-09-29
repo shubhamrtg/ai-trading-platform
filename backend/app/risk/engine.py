@@ -196,14 +196,20 @@ class RiskEngine:
                 rejection_reasons=rejection_reasons,
                 calculated_quantity=None,
                 calculated_risk=None,
+                authorized_cash_requirement=None,
                 risk_limit_applied=None,
                 timestamp=context.evaluated_at,
             )
 
         # Approved!
         calculated_risk = None
-        if signal.proposed_entry_price is not None and signal.stop_loss is not None:
-            calculated_risk = abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
+        authorized_cash_requirement = None
+        if signal.proposed_entry_price is not None:
+            if signal.stop_loss is not None:
+                calculated_risk = abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
+            
+            # V3.8: Cash authorized = (quantity * proposed_entry_price) + transaction_cost_allowance
+            authorized_cash_requirement = (signal.quantity * signal.proposed_entry_price) + policy.transaction_cost_allowance
 
         decision = RiskDecision(
             decision_id=deterministic_id,
@@ -214,6 +220,7 @@ class RiskEngine:
             trading_mode=context.trading_mode,
             calculated_quantity=signal.quantity,
             calculated_risk=calculated_risk,
+            authorized_cash_requirement=authorized_cash_requirement,
             risk_limit_applied=None,
             timestamp=context.evaluated_at,
         )

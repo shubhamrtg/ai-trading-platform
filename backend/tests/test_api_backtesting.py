@@ -53,7 +53,7 @@ async def test_backtest_lifecycle(
             symbol="BTC-USD",
             timeframe="1d",
             start_time=datetime.datetime(2023, 1, 1, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2023, 1, 10, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2023, 1, 31, tzinfo=datetime.UTC),
             initial_capital=Decimal("100000.0"),
             commission_pct=Decimal("0.0"),
             slippage_pct=Decimal("0.0"),
@@ -378,7 +378,7 @@ async def test_result_configuration_persistence(
             symbol="BTC-USD",
             timeframe="1d",
             start_time=datetime.datetime(2023, 1, 1, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2023, 1, 10, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2023, 1, 31, tzinfo=datetime.UTC),
             initial_capital=Decimal("100000.0"),
             commission_pct=Decimal("0.0"),
             slippage_pct=Decimal("0.0"),
@@ -401,7 +401,7 @@ async def test_result_configuration_persistence(
 
         # start/end must round-trip
         assert "2023-01-01" in data["start_time"]
-        assert "2023-01-10" in data["end_time"]
+        assert "2023-01-31" in data["end_time"]
 
         # ---- Result metrics persistence ----
         assert data["status"] == BacktestStatus.COMPLETED.value

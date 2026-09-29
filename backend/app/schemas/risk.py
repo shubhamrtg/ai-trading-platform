@@ -52,6 +52,9 @@ class RiskDecision(BaseModel):
     calculated_quantity: Decimal | None = Field(
         None, description="Final approved quantity to trade"
     )
+    authorized_cash_requirement: Decimal | None = Field(
+        None, description="Maximum monetary cash commitment authorized for paper trading"
+    )
 
     # Which limit was the most restrictive (if modified)
     risk_limit_applied: str | None = Field(None, description="Name of the bounding risk rule")
@@ -87,6 +90,7 @@ class RiskPolicy(BaseModel):
     max_daily_loss: Decimal = Field(..., ge=0)
     max_drawdown_percent: Decimal = Field(..., ge=0, le=1.0)
     trading_halted: bool = Field(default=False)
+    transaction_cost_allowance: Decimal = Field(default=Decimal("0.0"), ge=0, description="Allowance for transaction costs/slippage")
 
 
 class RiskContext(BaseModel):

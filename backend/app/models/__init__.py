@@ -41,3 +41,8 @@ __all__.append("CandleModel")
 from app.models.market_data import MarketDataCoverageModel
 
 __all__.append('MarketDataCoverageModel')
+
+from app.models.paper import PaperSessionModel, CashReservationModel
+
+__all__.extend(['PaperSessionModel', 'CashReservationModel'])
+

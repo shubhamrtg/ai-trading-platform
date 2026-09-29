@@ -348,20 +348,20 @@ def test_stop_limit_order_fails_closed(
 
 def test_object_id_reuse_protection(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     import app.execution._provenance as prov
-    
+
     # We simulate ID reuse by manually inserting an entry into the registry with the id of a completely different object
     unapproved_decision = approved_decision.model_copy()
-    
+
     class Dummy:
         pass
     dummy = Dummy()
-    
+
     # Force the registry to associate the integer ID of unapproved_decision with a DIFFERENT object reference
     with prov._lock:
         prov._registry[id(unapproved_decision)] = dummy
-        
+
     # Now prov._registry has id(unapproved_decision) as a key, but the reference points to dummy.
-    # The id(...) in registry check would pass, but 
+    # The id(...) in registry check would pass, but
 #
     with pytest.raises(ValueError, match="RiskDecision lacks genuine execution provenance"):
         build_order_intent(valid_signal, unapproved_decision, "acc-1")
@@ -369,34 +369,35 @@ def test_object_id_reuse_protection(valid_signal: Signal, approved_decision: Ris
 
 def test_legitimate_decision_remains_valid_after_many_approvals(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     import app.execution._provenance as prov
-    
+
     # approved_decision is registered.
     assert prov._verify_exact_decision_provenance(approved_decision) is True
-    
+
     # Generate 15,000 dummy registered decisions to exceed any arbitrary eviction limits
     dummy_decisions = []
     for _ in range(15000):
         dummy_dec = approved_decision.model_copy()
         dummy_decisions.append(dummy_dec)
         prov._register_approved_decision(dummy_dec)
-        
+
     # approved_decision must still be valid
     assert prov._verify_exact_decision_provenance(approved_decision) is True
-    
+
     intent = build_order_intent(valid_signal, approved_decision, "acc-1")
     assert intent.intent.quantity == approved_decision.calculated_quantity
 
 
 def test_provenance_registry_memory_cleanup() -> None:
-    import app.execution._provenance as prov
     import gc
-    from app.schemas.risk import RiskDecision
-    from app.models.enums import RiskDecisionStatus
-    from uuid import uuid4
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
     from decimal import Decimal
+    from uuid import uuid4
+
+    import app.execution._provenance as prov
     from app.config.settings import TradingMode
-    
+    from app.models.enums import RiskDecisionStatus
+    from app.schemas.risk import RiskDecision
+
     # Create a decision
     decision = RiskDecision(
         decision_id=uuid4(),
@@ -410,20 +411,20 @@ def test_provenance_registry_memory_cleanup() -> None:
         risk_limit_applied=None,
         timestamp=datetime.now(UTC),
     )
-    
+
     did = id(decision)
     prov._register_approved_decision(decision)
-    
+
     # It is currently in the registry
     with prov._lock:
         assert did in prov._registry
-        
+
     # Delete the strong reference
     del decision
-    
+
     # Force garbage collection
     gc.collect()
-    
+
     # Verify the registry no longer retains the decision
     with prov._lock:
         assert did not in prov._registry

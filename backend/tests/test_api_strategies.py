@@ -1,5 +1,7 @@
 """Tests for the read-only Strategy API endpoints (Phase J)."""
 
+from collections.abc import AsyncGenerator
+
 import pytest
 from app.database import get_db
 from app.main import create_app
@@ -9,8 +11,6 @@ from app.models.strategy import StrategyModel, StrategyVersionModel
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-
-from collections.abc import AsyncGenerator
 
 @pytest.fixture
 async def test_db() -> AsyncGenerator[AsyncSession, None]:

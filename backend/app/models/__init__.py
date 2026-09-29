@@ -42,7 +42,7 @@ from app.models.market_data import MarketDataCoverageModel
 
 __all__.append('MarketDataCoverageModel')
 
-from app.models.paper import PaperSessionModel, CashReservationModel
+from app.models.paper import CashReservationModel, PaperSessionModel
 
 __all__.extend(['PaperSessionModel', 'CashReservationModel'])
 

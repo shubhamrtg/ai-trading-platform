@@ -32,7 +32,7 @@ class DummyMarketDataProvider(MarketDataProvider):
     ) -> AsyncGenerator[Candle, None]:
         """Generate deterministic candles for the requested date range."""
         current_time = start_time
-        
+
         # Determine timedelta based on timeframe string (basic support)
         if timeframe == "1h":
             delta = timedelta(hours=1)
@@ -46,7 +46,7 @@ class DummyMarketDataProvider(MarketDataProvider):
             # Provide some simulated wave pattern for prices so MAs actually cross over
             import math
             wave = Decimal(math.sin(i / 5.0) * 10)
-            
+
             yield Candle(
                 symbol=symbol,
                 timeframe=timeframe,

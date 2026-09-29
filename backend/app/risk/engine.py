@@ -7,8 +7,6 @@ It is deterministic, stateless, and side-effect free.
 
 import uuid
 from decimal import Decimal
-from functools import wraps
-from typing import Any
 
 from app.models.enums import OrderSide, RiskDecisionStatus, RiskRejectionCode
 from app.schemas.risk import RiskContext, RiskDecision, RiskPolicy
@@ -207,7 +205,7 @@ class RiskEngine:
         if signal.proposed_entry_price is not None:
             if signal.stop_loss is not None:
                 calculated_risk = abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
-            
+
             # V3.8: Cash authorized = (quantity * proposed_entry_price) + transaction_cost_allowance
             authorized_cash_requirement = (signal.quantity * signal.proposed_entry_price) + policy.transaction_cost_allowance
 

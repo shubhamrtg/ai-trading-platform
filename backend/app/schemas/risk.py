@@ -11,10 +11,9 @@ Cross-field invariants enforced by model_validator:
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config.settings import TradingMode
 from app.models.enums import RiskDecisionStatus, RiskRejectionCode

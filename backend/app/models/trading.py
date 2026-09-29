@@ -194,6 +194,7 @@ class OrderModel(Base):
     state: Mapped[OrderState] = mapped_column(String, index=True)
 
     execution_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    execution_fee: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     filled_quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), default=Decimal("0.0"))
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)

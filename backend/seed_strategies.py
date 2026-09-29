@@ -1,22 +1,22 @@
 import asyncio
-import sys
-from datetime import UTC, datetime
 
 # Setup paths for importing app modules
 import os
+import sys
+from datetime import UTC, datetime
+
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from app.database import setup_database, get_engine
 from app.config import get_settings
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from app.database import setup_database
+from app.models.strategy import StrategyModel, StrategyVersionModel
 
 # Import Strategy Registry and models
 from app.strategies.sdk import StrategyRegistry
-from app.models.strategy import StrategyModel, StrategyVersionModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Ensure the moving average crossover is registered
-import app.strategies.examples.moving_average_crossover
 
 async def main():
     settings = get_settings()
@@ -33,7 +33,7 @@ async def main():
             stmt = select(StrategyModel).where(StrategyModel.strategy_id == strategy_id)
             res = await session.execute(stmt)
             strat = res.scalar_one_or_none()
-            
+
             if not strat:
                 strat = StrategyModel(
                     strategy_id=strategy_id,
@@ -48,7 +48,7 @@ async def main():
                 await session.flush()
             else:
                 strat.status = "ACTIVE"
-            
+
             # Ensure Version exists
             stmt_v = select(StrategyVersionModel).where(
                 StrategyVersionModel.strategy_id == strategy_id,

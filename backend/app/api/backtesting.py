@@ -2,9 +2,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.backtesting.engine import BacktestEngine
+from app.backtesting.provider import DummyMarketDataProvider
+from app.backtesting.repository import BacktestRunRepository
 from app.backtesting.schemas import BacktestEquityPoint, BacktestTradeRecord
 from app.backtesting.service import BacktestApplicationService
+from app.database import get_db
 from app.models.backtesting import BacktestRunModel
 from app.schemas.api_backtesting import (
     BacktestCreateRequest,
@@ -12,15 +17,9 @@ from app.schemas.api_backtesting import (
     BacktestListPaginated,
     BacktestListResponse,
 )
-
-
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app.backtesting.repository import BacktestRunRepository
 from app.strategies.repository import StrategyVersionRepository
-from app.backtesting.engine import BacktestEngine
 from app.strategies.service import StrategyExecutionService
-from app.backtesting.provider import DummyMarketDataProvider
+
 
 def get_backtest_service(db_session: AsyncSession = Depends(get_db)) -> BacktestApplicationService:
     """Dependency provider for BacktestApplicationService."""

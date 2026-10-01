@@ -665,3 +665,178 @@ async def test_insufficient_history_fails_closed(
 
     ctx = runner._get_or_create_context("BTC-USD", "1h")
     assert ctx._history == []
+
+
+@pytest.mark.asyncio
+async def test_quote_failure_recovery(db_session: AsyncSession, setup_session):
+    import uuid
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.models.enums import OrderSide, OrderState, OrderType, RiskDecisionStatus
+    from app.models.paper import CashReservationModel
+    from app.models.trading import OrderModel, SignalModel
+    from app.paper.orchestrator import PaperOrchestrator
+    from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
+    from sqlalchemy import select
+    def _now(): return datetime.now(UTC)
+
+    session_id, worker_id, account_id = setup_session
+
+    class FailingAdapter:
+        async def get_quote(self, symbol: str):
+            raise RuntimeError("Fake quote acquisition failure")
+
+    orchestrator = PaperOrchestrator(db_session, FailingAdapter())
+
+    sig = Signal(
+        signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
+        symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
+        signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+    )
+    rd = RiskDecision(
+        decision_id=uuid.uuid4(), correlation_id=sig.correlation_id, signal_id=sig.signal_id,
+        status=RiskDecisionStatus.APPROVED, trading_mode="PAPER", calculated_quantity=Decimal("10.0"),
+        authorized_cash_requirement=Decimal("1000.0"), risk_policy_version="1.0", timestamp=_now()
+    )
+
+    db_session.add(SignalModel(**sig.model_dump(mode="python")))
+    await db_session.flush()
+
+    # 1. Manually reserve cash -> creates Order(SUBMITTED) and CashReservation(ACTIVE)
+    res_b = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig, rd)
+    assert res_b is True
+
+    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == sig.correlation_id))
+    order = order.scalar_one()
+
+    # Trigger quote failure recovery directly via the orchestrator's new method to simulate the exception catch
+    await orchestrator.transaction_cancel_submitted_order(session_id, worker_id, order.order_id, "Quote failure")
+
+    await db_session.refresh(order)
+    assert order.state == OrderState.CANCELLED
+
+    res = await db_session.execute(select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id))
+    res = res.scalar_one()
+    assert res.active is False
+    assert res.released_timestamp is not None
+
+    # 3. Test idempotent recovery
+    await orchestrator.transaction_cancel_submitted_order(session_id, worker_id, order.order_id, "retry")
+    await db_session.refresh(res)
+    assert res.active is False
+
+
+@pytest.mark.asyncio
+async def test_unexpected_sizing_failure(db_session: AsyncSession, setup_session):
+    import uuid
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.paper.orchestrator import PaperOrchestrator
+    def _now(): return datetime.now(UTC)
+
+
+    session_id, worker_id, account_id = setup_session
+
+    orchestrator = PaperOrchestrator(db_session, MockAdapter())
+
+    class BuggySizer:
+        def calculate_size(self, *args, **kwargs):
+            raise RuntimeError("Unexpected infrastructure bug in Sizer")
+
+
+
+
+
+    from app.models.base import ApplicationFailureError
+
+
+    candle = type('Candle', (), {'symbol': 'BTC-USD'})()
+
+
+    class DummyRunner:
+        def _get_or_create_context(self, *args, **kwargs):
+            class Ctx:
+                def __init__(self):
+                    self.id = uuid.uuid4()
+            return Ctx()
+        def process_market_data(self, *args, **kwargs):
+            from app.models.enums import OrderSide, OrderType
+            from app.schemas.signal import Signal
+            return Signal(
+                signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
+                symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
+                signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+            )
+
+    class DummyRisk:
+        pass
+
+    with pytest.raises(ApplicationFailureError) as exc_info:
+        await orchestrator.run_pipeline_for_candle(session_id, worker_id, candle, DummyRunner(), BuggySizer(), DummyRisk(), {})
+    assert "Unexpected system failure" in str(exc_info.value)
+
+
+
+@pytest.mark.asyncio
+async def test_transaction_d_idempotency(db_session: AsyncSession, setup_session):
+    import uuid
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
+    from app.models.portfolio import PortfolioSnapshotModel
+    from app.models.trading import FillModel, OrderModel, SignalModel
+    from app.paper.orchestrator import PaperOrchestrator
+    from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
+    from sqlalchemy import select
+    def _now(): return datetime.now(UTC)
+
+
+    session_id, worker_id, account_id = setup_session
+
+    orchestrator = PaperOrchestrator(db_session, MockAdapter())
+
+    sig = Signal(
+        signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
+        symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
+        signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+    )
+    rd = RiskDecision(
+        decision_id=uuid.uuid4(), correlation_id=sig.correlation_id, signal_id=sig.signal_id,
+        status=RiskDecisionStatus.APPROVED, trading_mode="PAPER", calculated_quantity=Decimal("10.0"),
+        authorized_cash_requirement=Decimal("1000.0"), risk_policy_version="1.0", timestamp=_now()
+    )
+
+    db_session.add(SignalModel(**sig.model_dump(mode="python")))
+    await db_session.flush()
+
+    await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig, rd)
+
+    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == sig.correlation_id))
+    order = order.scalar_one()
+
+    await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("100.0"), Decimal("0.0"))
+
+    res_d_1 = await orchestrator.transaction_d_fill(session_id, worker_id, order.order_id)
+    assert res_d_1 is True
+
+    fills = await db_session.execute(select(FillModel).where(FillModel.order_id == order.order_id))
+    assert len(fills.scalars().all()) == 1
+
+    portfolios = await db_session.execute(select(PortfolioSnapshotModel).where(PortfolioSnapshotModel.account_id == account_id).order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()))
+    first_portfolio = portfolios.scalars().first()
+
+    order_id_val = order.order_id
+    res_d_2 = await orchestrator.transaction_d_fill(session_id, worker_id, order_id_val)
+    assert res_d_2 is False
+
+    fills2 = await db_session.execute(select(FillModel).where(FillModel.order_id == order_id_val))
+    assert len(fills2.scalars().all()) == 1
+
+    portfolios2 = await db_session.execute(select(PortfolioSnapshotModel).where(PortfolioSnapshotModel.account_id == account_id).order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()))
+    assert portfolios2.scalars().first().snapshot_id == first_portfolio.snapshot_id
+

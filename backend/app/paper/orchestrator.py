@@ -159,7 +159,7 @@ class PaperOrchestrator:
             portfolio_snapshot = await self.db.execute(
                 select(PortfolioSnapshotModel)
                 .where(PortfolioSnapshotModel.account_id == session.account_id)
-                .order_by(PortfolioSnapshotModel.timestamp.desc())
+                .order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc())
                 .with_for_update()
                 .limit(1)
             )
@@ -278,6 +278,50 @@ class PaperOrchestrator:
             raise ApplicationFailureError(
                 f"Unexpected application failure during Transaction B: {e}"
             ) from e
+
+    async def transaction_cancel_submitted_order(self, session_id: uuid.UUID, worker_id: uuid.UUID, order_id: uuid.UUID, reason: str) -> None:
+        """Cancel a SUBMITTED order, typically due to quote or authorization failure, and release its reservation idempotently."""
+        session = await self.db.execute(select(PaperSessionModel).where(PaperSessionModel.session_id == session_id).with_for_update())
+        session = session.scalar_one_or_none()
+        if not session or not await self.check_lease(session, worker_id):
+            await self.db.rollback()
+            return
+
+        order = await self.db.execute(select(OrderModel).where(OrderModel.order_id == order_id).with_for_update())
+        order = order.scalar_one_or_none()
+        if not order:
+            await self.db.rollback()
+            return
+
+        # If already cancelled or filled, do nothing (idempotent)
+        if order.state in (OrderState.CANCELLED, OrderState.FILLED):
+            await self.db.rollback()
+            return
+
+        from app.domain.transitions import validate_order_transition
+
+        # We must only cancel from SUBMITTED or CANCEL_PENDING or ACKNOWLEDGED if permitted.
+        # But Phase B rules say ACKNOWLEDGED can go to CANCEL_PENDING.
+        if order.state not in (OrderState.CANCEL_PENDING, OrderState.CANCELLED):
+            validate_order_transition(order.state, OrderState.CANCEL_PENDING)
+            order.state = OrderState.CANCEL_PENDING
+            await self.db.flush()
+
+            validate_order_transition(OrderState.CANCEL_PENDING, OrderState.CANCELLED)
+            order.state = OrderState.CANCELLED
+
+        # Release reservation exactly once
+        reservation = await self.db.execute(
+            select(CashReservationModel)
+            .where(CashReservationModel.order_intent_id == order.intent_id)
+            .with_for_update()
+        )
+        reservation = reservation.scalar_one_or_none()
+        if reservation and reservation.active:
+            reservation.active = False
+            reservation.released_timestamp = self._now()
+
+        await self.db.commit()
 
     async def transaction_c_acknowledge(
         self,
@@ -410,7 +454,8 @@ class PaperOrchestrator:
         portfolio_snapshot = await self.db.execute(
             select(PortfolioSnapshotModel)
             .where(PortfolioSnapshotModel.account_id == session.account_id)
-            .order_by(PortfolioSnapshotModel.timestamp.desc())
+            .order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc())
+            .with_for_update()
             .limit(1)
         )
         portfolio = portfolio_snapshot.scalar_one_or_none()
@@ -570,7 +615,9 @@ class PaperOrchestrator:
         for pending_order in pending_orders.scalars().all():
             try:
                 quote_price, quote_fees = await self.adapter.get_quote(pending_order.symbol)
-            except Exception:
+            except Exception as e:
+                # Quote failure MUST NOT strand the SUBMITTED order. Recover by cancelling.
+                await self.transaction_cancel_submitted_order(session_id, worker_id, pending_order.order_id, str(e))
                 continue
 
             success = await self.transaction_c_acknowledge(
@@ -640,7 +687,8 @@ class PaperOrchestrator:
         portfolio_snapshot = await self.db.execute(
             select(PortfolioSnapshotModel)
             .where(PortfolioSnapshotModel.account_id == session.account_id)
-            .order_by(PortfolioSnapshotModel.timestamp.desc())
+            .order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc())
+            .with_for_update()
             .limit(1)
         )
         portfolio = portfolio_snapshot.scalar_one_or_none()
@@ -655,18 +703,13 @@ class PaperOrchestrator:
         pos = pos.scalar_one_or_none()
         current_pos_qty = pos.quantity if pos else Decimal("0.0")
 
-        from app.schemas.paper import SizingResult
-
-        try:
-            sizing_result = position_sizer.calculate_size(
-                signal=signal,
-                portfolio_equity=portfolio.equity,
-                current_position_quantity=current_pos_qty,
-            )
-            if sizing_result.is_valid:
-                signal.quantity = sizing_result.quantity
-        except Exception as e:
-            sizing_result = SizingResult(validation_error=f"Unexpected error during sizing: {e}")
+        sizing_result = position_sizer.calculate_size(
+            signal=signal,
+            portfolio_equity=portfolio.equity,
+            current_position_quantity=current_pos_qty,
+        )
+        if sizing_result.is_valid:
+            signal.quantity = sizing_result.quantity
 
         # 3. Risk Engine
         from app.config.settings import TradingMode
@@ -710,7 +753,9 @@ class PaperOrchestrator:
         # 5. Quote and Auth (Transaction C)
         try:
             quote_price, quote_fees = await self.adapter.get_quote(order.symbol)
-        except Exception:
+        except Exception as e:
+            # Quote failure MUST NOT strand the SUBMITTED order. Recover by cancelling.
+            await self.transaction_cancel_submitted_order(session_id, worker_id, order.order_id, str(e))
             return
 
         res_c = await self.transaction_c_acknowledge(

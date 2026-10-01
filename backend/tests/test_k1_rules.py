@@ -164,29 +164,35 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
 @pytest.mark.asyncio
 async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
     import uuid
+    from decimal import Decimal
 
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
+    from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
+    from app.models.paper import CashReservationModel, PaperSessionModel, PaperSessionState
+    from app.models.trading import SignalModel
+    from app.paper.orchestrator import PaperOrchestrator
+    from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
+    from sqlalchemy import select, text
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.pool import NullPool
 
-    # Use a shared memory database with separate engines to simulate real concurrent connections
-    shared_url = "sqlite+aiosqlite:///file:testdb_cash_conc?mode=memory&cache=shared&uri=true"
-    engine1 = create_async_engine(shared_url, poolclass=NullPool)
-    engine2 = create_async_engine(shared_url, poolclass=NullPool)
+    from tests.test_k1_rules import MockAdapter
 
-    # Keep a connection alive to prevent the in-memory DB from dropping
+    shared_url = "sqlite+aiosqlite:///file:testdb_cash_conc_new?mode=memory&cache=shared&uri=true"
+    # timeout=15 allows concurrent writers to wait instead of immediately throwing OperationalError
+    engine1 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
+    engine2 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
+
     keepalive_conn = await engine1.connect()
-
-    # Initialize schema
     from app.models.base import Base
 
     await keepalive_conn.run_sync(Base.metadata.create_all)
     await keepalive_conn.execute(text("PRAGMA foreign_keys = ON"))
+    await keepalive_conn.execute(text("PRAGMA journal_mode = WAL"))  # Helps with concurrency
     await keepalive_conn.commit()
 
     session_id, worker_id, account_id = setup_session
 
-    # We must also setup the account in this new shared DB
     async with AsyncSession(engine1) as init_db:
         from app.models.portfolio import PortfolioSnapshotModel
 
@@ -200,13 +206,19 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
                 equity=Decimal("10000.0"),
             )
         )
-        await init_db.commit()
+        s1 = PaperSessionModel(
+            session_id=session_id,
+            account_id=account_id,
+            strategy_id="test1",
+            strategy_version="1.0",
+            symbol="BTC-USD",
+            timeframe="1h",
+            state=PaperSessionState.RUNNING,
+            worker_owner_id=worker_id,
+            worker_heartbeat=_now(),
+        )
+        init_db.add(s1)
 
-    async with AsyncSession(engine1) as db1, AsyncSession(engine2) as db2:
-        o1 = PaperOrchestrator(db1, MockAdapter())
-        o2 = PaperOrchestrator(db2, MockAdapter())
-
-        # We assume the account exists with 10k cash due to setup_session
         session_id_2 = uuid.uuid4()
         worker_id_2 = uuid.uuid4()
         s2 = PaperSessionModel(
@@ -220,7 +232,12 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             worker_owner_id=worker_id_2,
             worker_heartbeat=_now(),
         )
-        db1.add(s2)
+        init_db.add(s2)
+        await init_db.commit()
+
+    async with AsyncSession(engine1) as db1, AsyncSession(engine2) as db2:
+        o1 = PaperOrchestrator(db1, MockAdapter())
+        o2 = PaperOrchestrator(db2, MockAdapter())
 
         sig1 = Signal(
             signal_id=uuid.uuid4(),
@@ -234,7 +251,7 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             order_type=OrderType.MARKET,
             signal_type="ENTRY",
             quantity=Decimal("60.0"),
-            metadata={"source": "test", "time_in_force": "GTC"},
+            metadata={"time_in_force": "GTC"},
         )
         db1.add(SignalModel(**sig1.model_dump(mode="python")))
 
@@ -250,10 +267,12 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             order_type=OrderType.MARKET,
             signal_type="ENTRY",
             quantity=Decimal("60.0"),
-            metadata={"source": "test", "time_in_force": "GTC"},
+            metadata={"time_in_force": "GTC"},
         )
-        db1.add(SignalModel(**sig2.model_dump(mode="python")))
+        db2.add(SignalModel(**sig2.model_dump(mode="python")))
+
         await db1.commit()
+        await db2.commit()
 
         rd1 = RiskDecision(
             decision_id=uuid.uuid4(),
@@ -278,47 +297,54 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             timestamp=_now(),
         )
 
-        from app.models.base import ApplicationFailureError
+        # Do NOT catch ApplicationFailureError, let it fail the test if it happens
 
-        async def safe_call(func, *args):
-            try:
-                return await func(*args)
-            except ApplicationFailureError:
-                return "FAIL"
+        async def delayed_call():
+            await asyncio.sleep(0.05)
+            return await o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2)
 
         results = await asyncio.gather(
-            safe_call(o1.transaction_b_reserve_cash, session_id, worker_id, sig1, rd1),
-            safe_call(o2.transaction_b_reserve_cash, session_id_2, worker_id_2, sig2, rd2),
+            o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1),
+            delayed_call(),
         )
 
-        # One should succeed (True), one should fail concurrency lock ("FAIL")
+        # Exactly one True, exactly one False
         assert (results[0] is True and results[1] is False) or (
             results[1] is True and results[0] is False
         )
 
+        # Verify total reservations
+        from sqlalchemy import func
 
-@pytest.mark.asyncio
+        res_sum = await db1.execute(
+            select(func.sum(CashReservationModel.authorized_cash_requirement)).where(
+                CashReservationModel.active == True
+            )
+        )
+        active_reserved_cash = res_sum.scalar() or Decimal("0.0")
+        assert active_reserved_cash == Decimal("6000.0")
+        assert active_reserved_cash <= Decimal("10000.0")
+
+
 @pytest.mark.asyncio
 async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session):
     import uuid
     from decimal import Decimal
 
-    from app.models.enums import (
-        OrderSide,
-        OrderType,
-        RiskDecisionStatus,
-    )
+    from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
     from app.models.paper import CashReservationModel
+    from app.models.trading import OrderIntentModel, OrderModel, RiskDecisionModel, SignalModel
     from app.paper.orchestrator import PaperOrchestrator
     from app.schemas.risk import RiskDecision
     from app.schemas.signal import Signal
+    from sqlalchemy import delete
+
+    from tests.test_k1_rules import MockAdapter
 
     session_id, worker_id, account_id = setup_session
     orchestrator = PaperOrchestrator(db_session, MockAdapter())
 
-    # We use transaction_b_reserve_cash to safely insert the first 7,000 active reservation
-    from app.models.trading import SignalModel
-
+    # 1. 7000 active reservation
     sig0 = Signal(
         signal_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -350,7 +376,7 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
     success0 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig0, rd0)
     assert success0 is True
 
-    # Test 3,000 should pass (7,000 + 3,000 = 10,000 <= 10,000)
+    # 2. Test 3,000 should pass (7,000 + 3,000 = 10,000 <= 10,000)
     sig1 = Signal(
         signal_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -382,25 +408,38 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
     success1 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
     assert success1 is True
 
-    # Clean up the 3000 reservation so we can test 3000.01 cleanly
-    from app.models.trading import OrderIntentModel, OrderModel, RiskDecisionModel
-    from sqlalchemy import delete
-
-    await db_session.execute(delete(OrderModel).where(OrderModel.quantity == Decimal("30.0")))
+    # Clean up using exact identities!
+    await db_session.execute(
+        delete(OrderModel).where(OrderModel.correlation_id == sig1.correlation_id)
+    )
     await db_session.execute(
         delete(CashReservationModel).where(
             CashReservationModel.authorized_cash_requirement == Decimal("3000.0")
         )
+    )  # wait, this deletes by value.
+    # To delete by id we need the order intent id, let's just rollback or just delete using IDs carefully.
+    # Actually, we can just use sig2 with a DIFFERENT timeframe/etc so we can just test the next failure WITHOUT cleaning up, wait! If we don't clean up, cash is 10k reserved, so the next 3000.01 will fail anyway! But the prompt says 7000 + 3000.01 must be tested.
+    # We can just rollback the whole session! But db_session.commit() was called.
+    # So let's delete exactly by finding the intent_id first.
+    from sqlalchemy import select
+
+    intent_record = await db_session.execute(
+        select(OrderIntentModel).where(OrderIntentModel.correlation_id == sig1.correlation_id)
+    )
+    intent_id = intent_record.scalar_one().intent_id
+    await db_session.execute(
+        delete(CashReservationModel).where(CashReservationModel.order_intent_id == intent_id)
     )
     await db_session.execute(
-        delete(OrderIntentModel).where(OrderIntentModel.quantity == Decimal("30.0"))
+        delete(OrderIntentModel).where(OrderIntentModel.intent_id == intent_id)
     )
     await db_session.execute(
-        delete(RiskDecisionModel).where(RiskDecisionModel.calculated_quantity == Decimal("30.0"))
+        delete(RiskDecisionModel).where(RiskDecisionModel.decision_id == rd1.decision_id)
     )
+    await db_session.execute(delete(SignalModel).where(SignalModel.signal_id == sig1.signal_id))
     await db_session.commit()
 
-    # Test 3,000.01 should fail
+    # 3. Test one-cent over (7,000 + 3,000.01 = 10,000.01 > 10,000)
     sig2 = Signal(
         signal_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -412,7 +451,7 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
         side=OrderSide.BUY,
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
-        quantity=Decimal("30.0001"),
+        quantity=Decimal("30.0"),
         metadata={"time_in_force": "GTC"},
     )
     rd2 = RiskDecision(
@@ -421,7 +460,7 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
         signal_id=sig2.signal_id,
         status=RiskDecisionStatus.APPROVED,
         trading_mode="PAPER",
-        calculated_quantity=Decimal("30.0001"),
+        calculated_quantity=Decimal("30.0"),
         authorized_cash_requirement=Decimal("3000.01"),
         risk_policy_version="1.0",
         timestamp=_now(),
@@ -433,6 +472,7 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
     assert success2 is False
 
 
+@pytest.mark.asyncio
 async def test_lease_lifecycle(db_session: AsyncSession, setup_session):
     session_id, worker_id, account_id = setup_session
     orchestrator = PaperOrchestrator(db_session, MockAdapter())
@@ -670,17 +710,15 @@ async def test_insufficient_history_fails_closed(
 @pytest.mark.asyncio
 async def test_quote_failure_recovery(db_session: AsyncSession, setup_session):
     import uuid
-    from datetime import UTC, datetime
     from decimal import Decimal
 
     from app.models.enums import OrderSide, OrderState, OrderType, RiskDecisionStatus
     from app.models.paper import CashReservationModel
-    from app.models.trading import OrderModel, SignalModel
+    from app.models.trading import OrderModel
     from app.paper.orchestrator import PaperOrchestrator
     from app.schemas.risk import RiskDecision
     from app.schemas.signal import Signal
     from sqlalchemy import select
-    def _now(): return datetime.now(UTC)
 
     session_id, worker_id, account_id = setup_session
 
@@ -690,42 +728,86 @@ async def test_quote_failure_recovery(db_session: AsyncSession, setup_session):
 
     orchestrator = PaperOrchestrator(db_session, FailingAdapter())
 
-    sig = Signal(
-        signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
-        symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
-        signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+    class DummyRunner:
+        def process_candle(self, candle):
+            return Signal(
+                signal_id=uuid.uuid4(),
+                correlation_id=uuid.uuid4(),
+                strategy_id="test",
+                strategy_version="1.0",
+                symbol="BTC-USD",
+                timestamp=_now(),
+                timeframe="1h",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                signal_type="ENTRY",
+                quantity=Decimal("10.0"),
+                metadata={"time_in_force": "GTC"},
+            )
+
+    class DummySizer:
+        def calculate_size(self, signal, portfolio_equity, current_position_quantity):
+            from app.schemas.paper import SizingResult
+
+            return SizingResult(is_valid=True, quantity=signal.quantity, reason="ok")
+
+    class DummyRisk:
+        def evaluate(self, signal, context, policy, sizing_result):
+            return RiskDecision(
+                decision_id=uuid.uuid4(),
+                correlation_id=signal.correlation_id,
+                signal_id=signal.signal_id,
+                status=RiskDecisionStatus.APPROVED,
+                trading_mode="PAPER",
+                calculated_quantity=signal.quantity,
+                calculated_risk=Decimal("0.0"),
+                authorized_cash_requirement=Decimal("1000.0"),
+                risk_policy_version="1.0",
+                timestamp=_now(),
+            )
+
+    # 1. Run pipeline - this will do Tx B, then get_quote, which fails, then it will call cancel recovery.
+    await orchestrator.run_pipeline_for_candle(
+        session_id=session_id,
+        worker_id=worker_id,
+        candle={},
+        runner=DummyRunner(),
+        position_sizer=DummySizer(),
+        risk_engine=DummyRisk(),
+        risk_policy={},
     )
-    rd = RiskDecision(
-        decision_id=uuid.uuid4(), correlation_id=sig.correlation_id, signal_id=sig.signal_id,
-        status=RiskDecisionStatus.APPROVED, trading_mode="PAPER", calculated_quantity=Decimal("10.0"),
-        authorized_cash_requirement=Decimal("1000.0"), risk_policy_version="1.0", timestamp=_now()
-    )
 
-    db_session.add(SignalModel(**sig.model_dump(mode="python")))
-    await db_session.flush()
+    # Verify Order is CANCELLED and reservation released
+    order = await db_session.execute(select(OrderModel))
+    order = order.scalars().first()
 
-    # 1. Manually reserve cash -> creates Order(SUBMITTED) and CashReservation(ACTIVE)
-    res_b = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig, rd)
-    assert res_b is True
-
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == sig.correlation_id))
-    order = order.scalar_one()
-
-    # Trigger quote failure recovery directly via the orchestrator's new method to simulate the exception catch
-    await orchestrator.transaction_cancel_submitted_order(session_id, worker_id, order.order_id, "Quote failure")
-
-    await db_session.refresh(order)
     assert order.state == OrderState.CANCELLED
 
-    res = await db_session.execute(select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id))
+    res = await db_session.execute(
+        select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id)
+    )
     res = res.scalar_one()
     assert res.active is False
     assert res.released_timestamp is not None
 
     # 3. Test idempotent recovery
-    await orchestrator.transaction_cancel_submitted_order(session_id, worker_id, order.order_id, "retry")
+    await orchestrator.transaction_cancel_submitted_order(
+        session_id, worker_id, order.order_id, "retry"
+    )
     await db_session.refresh(res)
     assert res.active is False
+
+    # Verify no Fill, no Portfolio mutation
+    from app.models.portfolio import PortfolioSnapshotModel
+    from app.models.trading import FillModel
+
+    fills = await db_session.execute(select(FillModel))
+    assert len(fills.scalars().all()) == 0
+
+    snapshots = await db_session.execute(select(PortfolioSnapshotModel))
+    snapshots = snapshots.scalars().all()
+    # Only the initial snapshot should exist
+    assert len(snapshots) == 1
 
 
 @pytest.mark.asyncio
@@ -735,8 +817,9 @@ async def test_unexpected_sizing_failure(db_session: AsyncSession, setup_session
     from decimal import Decimal
 
     from app.paper.orchestrator import PaperOrchestrator
-    def _now(): return datetime.now(UTC)
 
+    def _now():
+        return datetime.now(UTC)
 
     session_id, worker_id, account_id = setup_session
 
@@ -746,69 +829,90 @@ async def test_unexpected_sizing_failure(db_session: AsyncSession, setup_session
         def calculate_size(self, *args, **kwargs):
             raise RuntimeError("Unexpected infrastructure bug in Sizer")
 
-
-
-
-
     from app.models.base import ApplicationFailureError
 
-
-    candle = type('Candle', (), {'symbol': 'BTC-USD'})()
-
+    candle = type("Candle", (), {"symbol": "BTC-USD"})()
 
     class DummyRunner:
         def _get_or_create_context(self, *args, **kwargs):
             class Ctx:
                 def __init__(self):
                     self.id = uuid.uuid4()
+
             return Ctx()
+
         def process_market_data(self, *args, **kwargs):
             from app.models.enums import OrderSide, OrderType
             from app.schemas.signal import Signal
+
             return Signal(
-                signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
-                symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
-                signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+                signal_id=uuid.uuid4(),
+                correlation_id=uuid.uuid4(),
+                strategy_id="test",
+                strategy_version="1.0",
+                symbol="BTC-USD",
+                timestamp=_now(),
+                timeframe="1h",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                signal_type="ENTRY",
+                quantity=Decimal("10.0"),
+                metadata={"time_in_force": "GTC"},
             )
 
     class DummyRisk:
         pass
 
     with pytest.raises(ApplicationFailureError) as exc_info:
-        await orchestrator.run_pipeline_for_candle(session_id, worker_id, candle, DummyRunner(), BuggySizer(), DummyRisk(), {})
+        await orchestrator.run_pipeline_for_candle(
+            session_id, worker_id, candle, DummyRunner(), BuggySizer(), DummyRisk(), {}
+        )
     assert "Unexpected system failure" in str(exc_info.value)
-
 
 
 @pytest.mark.asyncio
 async def test_transaction_d_idempotency(db_session: AsyncSession, setup_session):
     import uuid
-    from datetime import UTC, datetime
     from decimal import Decimal
 
-    from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
-    from app.models.portfolio import PortfolioSnapshotModel
+    from app.models.enums import OrderSide, OrderState, OrderType, RiskDecisionStatus
+    from app.models.paper import CashReservationModel
+    from app.models.portfolio import PortfolioSnapshotModel, PositionModel
     from app.models.trading import FillModel, OrderModel, SignalModel
     from app.paper.orchestrator import PaperOrchestrator
     from app.schemas.risk import RiskDecision
     from app.schemas.signal import Signal
     from sqlalchemy import select
-    def _now(): return datetime.now(UTC)
 
+    from tests.test_k1_rules import MockAdapter
 
     session_id, worker_id, account_id = setup_session
-
     orchestrator = PaperOrchestrator(db_session, MockAdapter())
 
     sig = Signal(
-        signal_id=uuid.uuid4(), correlation_id=uuid.uuid4(), strategy_id="test", strategy_version="1.0",
-        symbol="BTC-USD", timestamp=_now(), timeframe="1h", side=OrderSide.BUY, order_type=OrderType.MARKET,
-        signal_type="ENTRY", quantity=Decimal("10.0"), metadata={"time_in_force": "GTC"}
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("10.0"),
+        metadata={"time_in_force": "GTC"},
     )
     rd = RiskDecision(
-        decision_id=uuid.uuid4(), correlation_id=sig.correlation_id, signal_id=sig.signal_id,
-        status=RiskDecisionStatus.APPROVED, trading_mode="PAPER", calculated_quantity=Decimal("10.0"),
-        authorized_cash_requirement=Decimal("1000.0"), risk_policy_version="1.0", timestamp=_now()
+        decision_id=uuid.uuid4(),
+        correlation_id=sig.correlation_id,
+        signal_id=sig.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("10.0"),
+        authorized_cash_requirement=Decimal("1000.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
     )
 
     db_session.add(SignalModel(**sig.model_dump(mode="python")))
@@ -816,27 +920,104 @@ async def test_transaction_d_idempotency(db_session: AsyncSession, setup_session
 
     await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig, rd)
 
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == sig.correlation_id))
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == sig.correlation_id)
+    )
     order = order.scalar_one()
 
-    await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("100.0"), Decimal("0.0"))
+    await orchestrator.transaction_c_acknowledge(
+        session_id, worker_id, order.order_id, Decimal("100.0"), Decimal("0.0")
+    )
 
     res_d_1 = await orchestrator.transaction_d_fill(session_id, worker_id, order.order_id)
     assert res_d_1 is True
 
+    # CAPTURE EVERYTHING
     fills = await db_session.execute(select(FillModel).where(FillModel.order_id == order.order_id))
-    assert len(fills.scalars().all()) == 1
+    fills = fills.scalars().all()
+    fill_count_1 = len(fills)
+    fill_id_1 = fills[0].fill_id
 
-    portfolios = await db_session.execute(select(PortfolioSnapshotModel).where(PortfolioSnapshotModel.account_id == account_id).order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()))
+    portfolios = await db_session.execute(
+        select(PortfolioSnapshotModel)
+        .where(PortfolioSnapshotModel.account_id == account_id)
+        .order_by(
+            PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()
+        )
+    )
     first_portfolio = portfolios.scalars().first()
 
+    cash_1 = first_portfolio.cash
+    available_cash_1 = first_portfolio.available_cash
+    reserved_capital_1 = first_portfolio.reserved_capital
+    equity_1 = first_portfolio.equity
+    total_realized_pnl_1 = first_portfolio.total_realized_pnl
+    total_unrealized_pnl_1 = first_portfolio.total_unrealized_pnl
+    total_exposure_1 = first_portfolio.total_exposure
+
+    pos = await db_session.execute(
+        select(PositionModel).where(PositionModel.account_id == account_id)
+    )
+    pos = pos.scalar_one()
+    pos_quantity_1 = pos.quantity
+    pos_avg_entry_1 = pos.average_entry_price
+
+    res = await db_session.execute(
+        select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id)
+    )
+    res = res.scalar_one()
+    res_active_1 = res.active
+    res_released_timestamp_1 = res.released_timestamp
+
+    await db_session.refresh(order)
+    order_state_1 = order.state
+    order_filled_quantity_1 = order.filled_quantity
+    order_average_fill_price_1 = order.average_fill_price
+
+    # CALL AGAIN
     order_id_val = order.order_id
     res_d_2 = await orchestrator.transaction_d_fill(session_id, worker_id, order_id_val)
     assert res_d_2 is False
 
+    # ASSERT EVERYTHING REMAINS UNCHANGED
     fills2 = await db_session.execute(select(FillModel).where(FillModel.order_id == order_id_val))
-    assert len(fills2.scalars().all()) == 1
+    fills2 = fills2.scalars().all()
+    assert len(fills2) == fill_count_1
+    assert fills2[0].fill_id == fill_id_1
 
-    portfolios2 = await db_session.execute(select(PortfolioSnapshotModel).where(PortfolioSnapshotModel.account_id == account_id).order_by(PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()))
-    assert portfolios2.scalars().first().snapshot_id == first_portfolio.snapshot_id
+    portfolios2 = await db_session.execute(
+        select(PortfolioSnapshotModel)
+        .where(PortfolioSnapshotModel.account_id == account_id)
+        .order_by(
+            PortfolioSnapshotModel.timestamp.desc(), PortfolioSnapshotModel.snapshot_id.desc()
+        )
+    )
+    portfolios2_list = portfolios2.scalars().all()
+    second_portfolio = portfolios2_list[0]
 
+    assert second_portfolio.snapshot_id == first_portfolio.snapshot_id
+    assert second_portfolio.cash == cash_1
+    assert second_portfolio.available_cash == available_cash_1
+    assert second_portfolio.reserved_capital == reserved_capital_1
+    assert second_portfolio.equity == equity_1
+    assert second_portfolio.total_realized_pnl == total_realized_pnl_1
+    assert second_portfolio.total_unrealized_pnl == total_unrealized_pnl_1
+    assert second_portfolio.total_exposure == total_exposure_1
+
+    pos2 = await db_session.execute(
+        select(PositionModel).where(PositionModel.account_id == account_id)
+    )
+    pos2 = pos2.scalar_one()
+    assert pos2.quantity == pos_quantity_1
+    assert pos2.average_entry_price == pos_avg_entry_1
+
+    await db_session.refresh(res)
+    assert res.active == res_active_1
+    assert res.released_timestamp == res_released_timestamp_1
+    assert res.active is False
+
+    await db_session.refresh(order)
+    assert order.state == order_state_1
+    assert order.state == OrderState.FILLED
+    assert order.filled_quantity == order_filled_quantity_1
+    assert order.average_fill_price == order_average_fill_price_1

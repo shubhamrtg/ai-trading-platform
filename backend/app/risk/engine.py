@@ -61,11 +61,13 @@ class RiskEngine:
                 "trading_halted": policy.trading_halted,
             },
             "sizing_result": {
-                "is_valid": sizing_result.is_valid if sizing_result else None,
+                "is_valid": sizing_result.is_valid if sizing_result is not None else None,
                 "quantity": str(sizing_result.quantity)
-                if sizing_result and sizing_result.quantity
+                if sizing_result is not None and sizing_result.quantity is not None
                 else None,
-                "validation_error": sizing_result.validation_error if sizing_result else None,
+                "validation_error": sizing_result.validation_error
+                if sizing_result is not None
+                else None,
             },
         }
 

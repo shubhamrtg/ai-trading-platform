@@ -539,3 +539,10 @@ def test_risk_decision_identity_includes_sizing_result(base_signal, base_context
     assert dec_1.decision_id != dec_2.decision_id
     assert dec_1.decision_id != dec_3.decision_id
     assert dec_2.decision_id != dec_3.decision_id
+    sz_4 = SizingResult(is_valid=True, quantity=None)
+    sz_5 = SizingResult(is_valid=True, quantity=Decimal("0"))
+
+    dec_4 = engine.evaluate(base_signal, base_context, base_policy, sz_4)
+    dec_5 = engine.evaluate(base_signal, base_context, base_policy, sz_5)
+
+    assert dec_4.decision_id != dec_5.decision_id

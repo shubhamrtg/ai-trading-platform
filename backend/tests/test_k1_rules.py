@@ -278,15 +278,161 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             timestamp=_now(),
         )
 
+        from app.models.base import ApplicationFailureError
+
+        async def safe_call(func, *args):
+            try:
+                return await func(*args)
+            except ApplicationFailureError:
+                return "FAIL"
+
         results = await asyncio.gather(
-            o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1),
-            o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2),
+            safe_call(o1.transaction_b_reserve_cash, session_id, worker_id, sig1, rd1),
+            safe_call(o2.transaction_b_reserve_cash, session_id_2, worker_id_2, sig2, rd2),
         )
 
-        assert (results[0] and not results[1]) or (results[1] and not results[0])
+        # One should succeed (True), one should fail concurrency lock ("FAIL")
+        assert (results[0] is True and results[1] is False) or (
+            results[1] is True and results[0] is False
+        )
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session):
+    import uuid
+    from decimal import Decimal
+
+    from app.models.enums import (
+        OrderSide,
+        OrderType,
+        RiskDecisionStatus,
+    )
+    from app.models.paper import CashReservationModel
+    from app.paper.orchestrator import PaperOrchestrator
+    from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
+
+    session_id, worker_id, account_id = setup_session
+    orchestrator = PaperOrchestrator(db_session, MockAdapter())
+
+    # We use transaction_b_reserve_cash to safely insert the first 7,000 active reservation
+    from app.models.trading import SignalModel
+
+    sig0 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("70.0"),
+        metadata={"time_in_force": "GTC"},
+    )
+    rd0 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig0.correlation_id,
+        signal_id=sig0.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("70.0"),
+        authorized_cash_requirement=Decimal("7000.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig0.model_dump(mode="python")))
+    await db_session.commit()
+
+    success0 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig0, rd0)
+    assert success0 is True
+
+    # Test 3,000 should pass (7,000 + 3,000 = 10,000 <= 10,000)
+    sig1 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("30.0"),
+        metadata={"time_in_force": "GTC"},
+    )
+    rd1 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig1.correlation_id,
+        signal_id=sig1.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("30.0"),
+        authorized_cash_requirement=Decimal("3000.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig1.model_dump(mode="python")))
+    await db_session.commit()
+
+    success1 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
+    assert success1 is True
+
+    # Clean up the 3000 reservation so we can test 3000.01 cleanly
+    from app.models.trading import OrderIntentModel, OrderModel, RiskDecisionModel
+    from sqlalchemy import delete
+
+    await db_session.execute(delete(OrderModel).where(OrderModel.quantity == Decimal("30.0")))
+    await db_session.execute(
+        delete(CashReservationModel).where(
+            CashReservationModel.authorized_cash_requirement == Decimal("3000.0")
+        )
+    )
+    await db_session.execute(
+        delete(OrderIntentModel).where(OrderIntentModel.quantity == Decimal("30.0"))
+    )
+    await db_session.execute(
+        delete(RiskDecisionModel).where(RiskDecisionModel.calculated_quantity == Decimal("30.0"))
+    )
+    await db_session.commit()
+
+    # Test 3,000.01 should fail
+    sig2 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("30.0001"),
+        metadata={"time_in_force": "GTC"},
+    )
+    rd2 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig2.correlation_id,
+        signal_id=sig2.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("30.0001"),
+        authorized_cash_requirement=Decimal("3000.01"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig2.model_dump(mode="python")))
+    await db_session.commit()
+
+    success2 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig2, rd2)
+    assert success2 is False
+
+
 async def test_lease_lifecycle(db_session: AsyncSession, setup_session):
     session_id, worker_id, account_id = setup_session
     orchestrator = PaperOrchestrator(db_session, MockAdapter())
@@ -516,3 +662,6 @@ async def test_insufficient_history_fails_closed(
 
     with pytest.raises(HistoricalDataIncompleteError):
         runner.hydrate_history("BTC-USD", "1h", history_candles)
+
+    ctx = runner._get_or_create_context("BTC-USD", "1h")
+    assert ctx._history == []

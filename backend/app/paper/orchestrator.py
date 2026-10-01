@@ -271,9 +271,13 @@ class PaperOrchestrator:
             await self.db.commit()
             return True
 
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            return False
+            from app.models.base import ApplicationFailureError
+
+            raise ApplicationFailureError(
+                f"Unexpected application failure during Transaction B: {e}"
+            ) from e
 
     async def transaction_c_acknowledge(
         self,
@@ -614,11 +618,20 @@ class PaperOrchestrator:
             session.state = PaperSessionState.HALTED
             await self.db.flush()
             return
-        except (StrategyExecutionError, StrategyValidationError, Exception):
-            # Unexpected strategy/system exception => fail closed
+        except (StrategyExecutionError, StrategyValidationError):
+            # Expected strategy exception => fail closed
             session.state = PaperSessionState.HALTED
             await self.db.flush()
             return
+        except Exception as e:
+            # Unexpected strategy/system exception => fail closed AND propagate
+            session.state = PaperSessionState.HALTED
+            await self.db.flush()
+            from app.models.base import ApplicationFailureError
+
+            raise ApplicationFailureError(
+                f"Unexpected system failure during pipeline execution: {e}"
+            ) from e
 
         if not signal:
             return

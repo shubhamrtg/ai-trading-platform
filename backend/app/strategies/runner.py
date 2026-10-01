@@ -106,23 +106,30 @@ class StrategyRunner:
         return self.contexts[key]
 
     def hydrate_history(self, symbol: str, timeframe: str, candles: list[Candle]) -> None:
-        """Hydrate canonical history for a context."""
+        """Hydrate canonical history for a context atomically."""
         context = self._get_or_create_context(symbol, timeframe)
+
+        # 1. Validate ordering of incoming candles against each other and existing history
+        last_ts = context._history[-1].timestamp if context._history else None
         for candle in candles:
-            if context._history:
-                if candle.timestamp == context._history[-1].timestamp:
+            if last_ts is not None:
+                if candle.timestamp == last_ts:
                     raise DuplicateDataError(f"Duplicate historical candle {candle.timestamp}")
-                if candle.timestamp < context._history[-1].timestamp:
+                if candle.timestamp < last_ts:
                     raise ChronologicalDataError(
                         f"Out-of-order historical candle {candle.timestamp}"
                     )
-            context._history.append(candle)
+            last_ts = candle.timestamp
 
+        # 2. Validate sufficient history length
         required = self.strategy.metadata.required_history_candles
-        if len(context._history) < required:
+        if len(context._history) + len(candles) < required:
             raise HistoricalDataIncompleteError(
-                f"Strategy requires {required} historical candles for hydration, but only {len(context._history)} were provided."
+                f"Strategy requires {required} historical candles for hydration, but only {len(context._history) + len(candles)} were provided."
             )
+
+        # 3. Mutate atomically
+        context._history.extend(candles)
 
     def process_candle(self, candle: Candle) -> Signal | None:
         """Chronologically process a single candle and return a Signal if emitted.

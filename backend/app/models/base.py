@@ -37,3 +37,9 @@ class Base(DeclarativeBase):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class ApplicationFailureError(Exception):
+    """Raised for unexpected infrastructure or persistence failures across the application boundary."""
+
+    pass

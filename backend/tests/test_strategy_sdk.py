@@ -10,6 +10,7 @@ from app.strategies.examples.moving_average_crossover import MovingAverageCrosso
 from app.strategies.repository import StrategyVersionRepository
 from app.strategies.runner import (
     ChronologicalDataError,
+    DuplicateDataError,
     StrategyExecutionError,
     StrategyValidationError,
 )
@@ -155,7 +156,7 @@ async def test_chronological_candle_processing(db_session: AsyncSession) -> None
     assert len(ctx.history) == 2
 
     # Duplicate rejected with dedicated error
-    with pytest.raises(ChronologicalDataError, match="duplicate candle rejected"):
+    with pytest.raises(DuplicateDataError, match="Duplicate candle rejected"):
         runner.process_candle(c2)
 
     # The history remains unchanged after rejection
@@ -270,6 +271,7 @@ def test_strategy_metadata_immutability() -> None:
         supported_asset_classes=("crypto",),
         supported_timeframes=("1h",),
         required_indicators=(),
+        required_history_candles=0,
     )
 
     with pytest.raises(ValidationError):
@@ -405,6 +407,7 @@ def test_source_hash_generation_and_failure(monkeypatch: Any) -> None:
             supported_asset_classes=(),
             supported_timeframes=(),
             required_indicators=(),
+            required_history_candles=0,
         )
         parameters_schema = dict
 

@@ -52,6 +52,7 @@ class StrategyMetadata(BaseModel):
     supported_asset_classes: tuple[str, ...] = Field(default_factory=tuple)
     supported_timeframes: tuple[str, ...] = Field(default_factory=tuple)
     required_indicators: tuple[str, ...] = Field(default_factory=tuple)
+    required_history_candles: int = Field(..., ge=0, description="Exact number of historical candles required to initialize.")
 
 
 class StrategyState:

@@ -12,6 +12,11 @@ from app.schemas.paper import SizingResult
 class PositionSizer:
     """Position sizing utility."""
 
+    def calculate_size(self, signal, portfolio_equity, current_position_quantity) -> SizingResult:
+        if signal.quantity is not None and signal.quantity > 0:
+            return SizingResult(quantity=signal.quantity)
+        return self.size_position(portfolio_equity, signal.proposed_entry_price)
+
     @staticmethod
     def size_position(
         portfolio_equity: Decimal,

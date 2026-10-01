@@ -13,3 +13,7 @@ class DataIntegrityError(MarketDataError):
 class ChronologyError(DataIntegrityError):
     """Raised when candles are not chronologically ordered."""
     pass
+
+class StaleDataError(DataIntegrityError):
+    """Raised when market data is too old relative to current time."""
+    pass

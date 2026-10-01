@@ -28,7 +28,13 @@ class StrategyValidationError(Exception):
 
 
 class ChronologicalDataError(Exception):
-    """Raised when market data arrives out of order or with duplicate timestamps."""
+    """Raised when market data arrives out of order."""
+
+    pass
+
+
+class DuplicateDataError(ChronologicalDataError):
+    """Raised when market data has a duplicate timestamp."""
 
     pass
 
@@ -109,10 +115,15 @@ class StrategyRunner:
         # Enforce chronological processing.
         # Explicitly reject invalid data without corrupting history.
         if context._history:
-            if candle.timestamp <= context._history[-1].timestamp:
+            if candle.timestamp == context._history[-1].timestamp:
+                raise DuplicateDataError(
+                    f"Duplicate candle rejected: "
+                    f"{candle.timestamp} == {context._history[-1].timestamp}"
+                )
+            if candle.timestamp < context._history[-1].timestamp:
                 raise ChronologicalDataError(
-                    f"Out-of-order or duplicate candle rejected: "
-                    f"{candle.timestamp} <= {context._history[-1].timestamp}"
+                    f"Out-of-order candle rejected: "
+                    f"{candle.timestamp} < {context._history[-1].timestamp}"
                 )
 
         try:

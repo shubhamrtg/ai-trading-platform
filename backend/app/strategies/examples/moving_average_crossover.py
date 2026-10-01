@@ -41,6 +41,7 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
         supported_asset_classes=("crypto", "stocks"),
         supported_timeframes=("1h", "1d"),
         required_indicators=(),
+        required_history_candles=50,
     )
 
     parameters_schema = MACrossoverParameters
@@ -86,6 +87,8 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 order_type=OrderType.MARKET,
                 signal_type=SignalType.ENTRY,
                 quantity=Decimal("1.0"),
+                proposed_entry_price=candle.close,
+                stop_loss=candle.close * Decimal("0.9"),
                 confidence=0.8,
                 rationale="Fast MA crossed above Slow MA",
             )
@@ -100,6 +103,8 @@ class MovingAverageCrossover(Strategy[MACrossoverParameters]):
                 order_type=OrderType.MARKET,
                 signal_type=SignalType.ENTRY,  # Simplified: just an entry
                 quantity=Decimal("1.0"),
+                proposed_entry_price=candle.close,
+                stop_loss=candle.close * Decimal("0.9"),
                 confidence=0.8,
                 rationale="Fast MA crossed below Slow MA",
             )

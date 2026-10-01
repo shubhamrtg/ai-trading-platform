@@ -51,7 +51,7 @@ class SizingResult(BaseModel):
 
     quantity: Decimal | None = None
     validation_error: str | None = None
-    is_valid: bool = Field(init=False)
+    is_valid: bool = Field(default=False, init=False)
 
     def __init__(self, **data: Any):
         super().__init__(**data)

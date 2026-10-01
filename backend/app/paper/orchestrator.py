@@ -294,9 +294,12 @@ class PaperOrchestrator:
         )
         reservation = reservation.scalar_one()
 
-        actual_execution_cash_requirement = (
-            order.quantity * actual_execution_price
-        ) + actual_execution_fees
+        if order.side == "SELL":
+            actual_execution_cash_requirement = actual_execution_fees
+        else:
+            actual_execution_cash_requirement = (
+                order.quantity * actual_execution_price
+            ) + actual_execution_fees
 
         if actual_execution_cash_requirement <= reservation.authorized_cash_requirement:
             validate_order_transition(order.state, 'ACKNOWLEDGED')
@@ -504,28 +507,36 @@ class PaperOrchestrator:
         # For K1, we can store last_processed_timestamp on the session model
         # Or we can just let StrategyRunner throw ChronologicalDataError
 
+        from app.market_data.exceptions import DataIntegrityError, StaleDataError
+        from app.strategies.runner import (
+            ChronologicalDataError,
+            DuplicateDataError,
+            StrategyExecutionError,
+            StrategyValidationError,
+        )
+
         try:
             signal = runner.process_candle(candle)
-        except Exception as e:
-            err_str = str(e).lower()
-            if "out-of-order" in err_str:
-                session.state = PaperSessionState.HALTED
-                await self.db.flush()
-                return
-            elif "duplicate" in err_str:
-                return # no-op
-            elif "malformed" in err_str:
-                session.state = PaperSessionState.HALTED
-                await self.db.flush()
-                return
-            elif "stale" in err_str:
-                session.state = PaperSessionState.PAUSED
-                await self.db.flush()
-                return
-            else:
-                session.state = PaperSessionState.HALTED
-                await self.db.flush()
-                return
+        except DuplicateDataError:
+            return  # no-op
+        except ChronologicalDataError:
+            session.state = PaperSessionState.HALTED
+            await self.db.flush()
+            return
+        except StaleDataError:
+            session.state = PaperSessionState.PAUSED
+            await self.db.flush()
+            return
+        except DataIntegrityError:
+            # Malformed data
+            session.state = PaperSessionState.HALTED
+            await self.db.flush()
+            return
+        except (StrategyExecutionError, StrategyValidationError, Exception):
+            # Unexpected strategy/system exception => fail closed
+            session.state = PaperSessionState.HALTED
+            await self.db.flush()
+            return
 
         if not signal:
             return

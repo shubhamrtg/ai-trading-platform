@@ -39,6 +39,7 @@ class DuplicateDataError(ChronologicalDataError):
     pass
 
 
+from app.models.base import HistoricalDataIncompleteError
 from app.models.strategy import StrategyVersionModel
 
 
@@ -103,6 +104,25 @@ class StrategyRunner:
                 timeframe=timeframe,
             )
         return self.contexts[key]
+
+    def hydrate_history(self, symbol: str, timeframe: str, candles: list[Candle]) -> None:
+        """Hydrate canonical history for a context."""
+        context = self._get_or_create_context(symbol, timeframe)
+        for candle in candles:
+            if context._history:
+                if candle.timestamp == context._history[-1].timestamp:
+                    raise DuplicateDataError(f"Duplicate historical candle {candle.timestamp}")
+                if candle.timestamp < context._history[-1].timestamp:
+                    raise ChronologicalDataError(
+                        f"Out-of-order historical candle {candle.timestamp}"
+                    )
+            context._history.append(candle)
+
+        required = self.strategy.metadata.required_history_candles
+        if len(context._history) < required:
+            raise HistoricalDataIncompleteError(
+                f"Strategy requires {required} historical candles for hydration, but only {len(context._history)} were provided."
+            )
 
     def process_candle(self, candle: Candle) -> Signal | None:
         """Chronologically process a single candle and return a Signal if emitted.

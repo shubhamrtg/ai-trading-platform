@@ -17,7 +17,7 @@ class RiskEngine:
     """Core deterministic risk evaluation engine."""
 
     def _generate_decision_id(
-        self, signal: Signal, context: RiskContext, policy: RiskPolicy
+        self, signal: Signal, context: RiskContext, policy: RiskPolicy, sizing_result=None
     ) -> uuid.UUID:
         """Generate a deterministic UUID representing the exact evaluation state."""
         import json
@@ -38,6 +38,7 @@ class RiskEngine:
                 else None,
             },
             "context": {
+                "available_cash": str(context.available_cash),
                 "portfolio_equity": str(context.portfolio_equity),
                 "current_position": str(context.current_position),
                 "current_exposure": str(context.current_exposure),
@@ -58,6 +59,13 @@ class RiskEngine:
                 "max_daily_loss": str(policy.max_daily_loss),
                 "max_drawdown_percent": str(policy.max_drawdown_percent),
                 "trading_halted": policy.trading_halted,
+            },
+            "sizing_result": {
+                "is_valid": sizing_result.is_valid if sizing_result else None,
+                "quantity": str(sizing_result.quantity)
+                if sizing_result and sizing_result.quantity
+                else None,
+                "validation_error": sizing_result.validation_error if sizing_result else None,
             },
         }
 
@@ -186,7 +194,7 @@ class RiskEngine:
 
         # Deterministic Decision ID Generation
         # Use UUID5 based on stable inputs
-        deterministic_id = self._generate_decision_id(signal, context, policy)
+        deterministic_id = self._generate_decision_id(signal, context, policy, sizing_result)
 
         if rejection_codes:
             return RiskDecision(

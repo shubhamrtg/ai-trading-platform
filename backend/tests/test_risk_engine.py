@@ -509,3 +509,33 @@ def test_determinism_decimal_representation_safety(
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
+
+
+def test_risk_decision_identity_includes_available_cash(base_signal, base_context, base_policy):
+    from app.risk.engine import RiskEngine
+
+    engine = RiskEngine()
+    ctx_1 = base_context.model_copy(update={"available_cash": Decimal("10000.0")})
+    ctx_2 = base_context.model_copy(update={"available_cash": Decimal("100.0")})
+    dec_1 = engine.evaluate(base_signal, ctx_1, base_policy)
+    dec_2 = engine.evaluate(base_signal, ctx_2, base_policy)
+    assert dec_1.decision_id != dec_2.decision_id
+
+
+def test_risk_decision_identity_includes_sizing_result(base_signal, base_context, base_policy):
+    from app.risk.engine import RiskEngine
+
+    engine = RiskEngine()
+    from app.paper.position_sizer import SizingResult
+
+    sz_1 = SizingResult(is_valid=True, quantity=Decimal("10.0"))
+    sz_2 = SizingResult(is_valid=True, quantity=Decimal("20.0"))
+    sz_3 = SizingResult(is_valid=False, validation_error="Failed")
+
+    dec_1 = engine.evaluate(base_signal, base_context, base_policy, sz_1)
+    dec_2 = engine.evaluate(base_signal, base_context, base_policy, sz_2)
+    dec_3 = engine.evaluate(base_signal, base_context, base_policy, sz_3)
+
+    assert dec_1.decision_id != dec_2.decision_id
+    assert dec_1.decision_id != dec_3.decision_id
+    assert dec_2.decision_id != dec_3.decision_id

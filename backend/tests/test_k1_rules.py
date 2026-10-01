@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -105,6 +106,7 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         trading_mode="PAPER",
     )
 
+    history_candles = []
     for i in range(50):
         candle = Candle(
             symbol="BTC-USD",
@@ -116,8 +118,9 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
             close=Decimal("100.0"),
             volume=Decimal("1.0"),
         )
-        context = runner._get_or_create_context(candle.symbol, candle.timeframe)
-        context._history.append(candle)
+        history_candles.append(candle)
+
+    runner.hydrate_history("BTC-USD", "1h", history_candles)
 
     candle = Candle(
         symbol="BTC-USD",
@@ -162,14 +165,44 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
 async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
     import uuid
 
-    # We will use the provided db_session's engine
-    engine = db_session.bind
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    # Use a shared memory database with separate engines to simulate real concurrent connections
+    shared_url = "sqlite+aiosqlite:///file:testdb_cash_conc?mode=memory&cache=shared&uri=true"
+    engine1 = create_async_engine(shared_url, poolclass=NullPool)
+    engine2 = create_async_engine(shared_url, poolclass=NullPool)
+
+    # Keep a connection alive to prevent the in-memory DB from dropping
+    keepalive_conn = await engine1.connect()
+
+    # Initialize schema
+    from app.models.base import Base
+
+    await keepalive_conn.run_sync(Base.metadata.create_all)
+    await keepalive_conn.execute(text("PRAGMA foreign_keys = ON"))
+    await keepalive_conn.commit()
 
     session_id, worker_id, account_id = setup_session
 
-    # Setup independent sessions and orchestrators
-    async with AsyncSession(engine) as db1, AsyncSession(engine) as db2:
-        pass
+    # We must also setup the account in this new shared DB
+    async with AsyncSession(engine1) as init_db:
+        from app.models.portfolio import PortfolioSnapshotModel
+
+        init_db.add(
+            PortfolioSnapshotModel(
+                snapshot_id=uuid.uuid4(),
+                account_id=account_id,
+                timestamp=_now(),
+                cash=Decimal("10000.0"),
+                available_cash=Decimal("10000.0"),
+                equity=Decimal("10000.0"),
+            )
+        )
+        await init_db.commit()
+
+    async with AsyncSession(engine1) as db1, AsyncSession(engine2) as db2:
         o1 = PaperOrchestrator(db1, MockAdapter())
         o2 = PaperOrchestrator(db2, MockAdapter())
 
@@ -245,10 +278,12 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             timestamp=_now(),
         )
 
-        t1 = await o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
-        t2 = await o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2)
+        results = await asyncio.gather(
+            o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1),
+            o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2),
+        )
 
-        assert (t1 and not t2) or (t2 and not t1)
+        assert (results[0] and not results[1]) or (results[1] and not results[0])
 
 
 @pytest.mark.asyncio
@@ -443,3 +478,41 @@ async def test_buy_sell_accounting(db_session: AsyncSession, setup_session):
     )
     port = port.scalars().first()
     assert port.total_realized_pnl == Decimal("100.0")
+
+
+async def test_insufficient_history_fails_closed(
+    db_session: AsyncSession, mock_adapter, setup_session
+):
+    session_id, worker_id, account_id = setup_session
+
+    version_record = StrategyVersionModel(
+        strategy_id="MA_Crossover_Reference",
+        version="1.0.0",
+        source_hash=StrategyRegistry.get("MA_Crossover_Reference", "1.0.0")[1],
+        status="ACTIVE",
+    )
+
+    runner = StrategyRunner(
+        version_record, {"fast_period": 10, "slow_period": 20, "risk_percent": "0.05"}
+    )
+
+    # Require 50, provide 49
+    history_candles = []
+    for i in range(49):
+        candle = Candle(
+            symbol="BTC-USD",
+            timestamp=_now() - timedelta(minutes=60 - i),
+            timeframe="1h",
+            open=Decimal("100.0"),
+            high=Decimal("110.0"),
+            low=Decimal("90.0"),
+            close=Decimal("100.0"),
+            volume=Decimal("1.0"),
+        )
+        history_candles.append(candle)
+
+    import pytest
+    from app.models.base import HistoricalDataIncompleteError
+
+    with pytest.raises(HistoricalDataIncompleteError):
+        runner.hydrate_history("BTC-USD", "1h", history_candles)

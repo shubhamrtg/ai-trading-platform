@@ -155,119 +155,125 @@ class PaperOrchestrator:
             return False
 
         # 2. Fetch authoritative portfolio cash
-        portfolio_snapshot = await self.db.execute(
-            select(PortfolioSnapshotModel)
-            .where(PortfolioSnapshotModel.account_id == session.account_id)
-            .order_by(PortfolioSnapshotModel.timestamp.desc())
-            .limit(1)
-        )
-        portfolio_snapshot = portfolio_snapshot.scalar_one_or_none()
-        portfolio_cash = portfolio_snapshot.cash if portfolio_snapshot else Decimal("0.0")
-
-        # 3. Sum authoritative active reservations for this account
-        # First we need all session_ids for this account to find their active reservations
-        account_sessions = await self.db.execute(
-            select(PaperSessionModel.session_id).where(
-                PaperSessionModel.account_id == session.account_id
+        try:
+            portfolio_snapshot = await self.db.execute(
+                select(PortfolioSnapshotModel)
+                .where(PortfolioSnapshotModel.account_id == session.account_id)
+                .order_by(PortfolioSnapshotModel.timestamp.desc())
+                .with_for_update()
+                .limit(1)
             )
-        )
-        account_session_ids = [row[0] for row in account_sessions.all()]
+            portfolio_snapshot = portfolio_snapshot.scalar_one_or_none()
+            portfolio_cash = portfolio_snapshot.cash if portfolio_snapshot else Decimal("0.0")
 
-        active_reserved_cash = Decimal("0.0")
-        if account_session_ids:
-            sum_res = await self.db.execute(
-                select(func.sum(CashReservationModel.authorized_cash_requirement))
-                .where(CashReservationModel.session_id.in_(account_session_ids))
-                .where(CashReservationModel.active == True)
+            # 3. Sum authoritative active reservations for this account
+            # First we need all session_ids for this account to find their active reservations
+            account_sessions = await self.db.execute(
+                select(PaperSessionModel.session_id).where(
+                    PaperSessionModel.account_id == session.account_id
+                )
             )
-            val = sum_res.scalar()
-            if val is not None:
-                active_reserved_cash = Decimal(val)
+            account_session_ids = [row[0] for row in account_sessions.all()]
 
-        # 4. Re-calculate available cash
-        cash_available_for_authorization = portfolio_cash - active_reserved_cash
+            active_reserved_cash = Decimal("0.0")
+            if account_session_ids:
+                sum_res = await self.db.execute(
+                    select(func.sum(CashReservationModel.authorized_cash_requirement))
+                    .where(CashReservationModel.session_id.in_(account_session_ids))
+                    .where(CashReservationModel.active == True)
+                )
+                val = sum_res.scalar()
+                if val is not None:
+                    active_reserved_cash = Decimal(val)
 
-        # 5. Verify authorization requirement
-        if risk_decision.authorized_cash_requirement is None:
+            # 4. Re-calculate available cash
+            cash_available_for_authorization = portfolio_cash - active_reserved_cash
+
+            # 5. Verify authorization requirement
+            if risk_decision.authorized_cash_requirement is None:
+                await self.db.rollback()
+                return False
+
+            if risk_decision.authorized_cash_requirement > cash_available_for_authorization:
+                # Insufficient cash
+                await self.db.rollback()
+                return False
+
+            # 6. Atomically persist
+            decision_model = RiskDecisionModel(
+                decision_id=risk_decision.decision_id,
+                correlation_id=risk_decision.correlation_id,
+                signal_id=risk_decision.signal_id,
+                status=risk_decision.status,
+                trading_mode=risk_decision.trading_mode,
+                calculated_quantity=risk_decision.calculated_quantity,
+                calculated_risk=risk_decision.calculated_risk,
+                authorized_cash_requirement=risk_decision.authorized_cash_requirement,
+                risk_policy_version=risk_decision.risk_policy_version,
+                timestamp=risk_decision.timestamp,
+            )
+            self.db.add(decision_model)
+            await self.db.flush()
+
+            # Ensure order semantics come from the originating Signal
+            intent_id = uuid.uuid4()
+            time_in_force_value = signal.metadata.get("time_in_force", "GTC")
+            if time_in_force_value != "GTC":
+                raise ValueError(
+                    f"K1 currently only supports GTC TimeInForce. Received: {time_in_force_value}"
+                )
+
+            intent_model = OrderIntentModel(
+                intent_id=intent_id,
+                correlation_id=risk_decision.correlation_id,
+                originating_signal_id=risk_decision.signal_id,
+                risk_decision_id=risk_decision.decision_id,
+                account_id=session.account_id,
+                symbol=signal.symbol,
+                side=signal.side.value if hasattr(signal.side, "value") else signal.side,
+                order_type=signal.order_type.value
+                if hasattr(signal.order_type, "value")
+                else signal.order_type,
+                quantity=risk_decision.calculated_quantity,
+                time_in_force=time_in_force_value,
+                idempotency_key=str(risk_decision.decision_id),
+                creation_timestamp=self._now(),
+            )
+            self.db.add(intent_model)
+            await self.db.flush()
+
+            reservation = CashReservationModel(
+                reservation_id=uuid.uuid4(),
+                session_id=session.session_id,
+                order_intent_id=intent_model.intent_id,
+                authorized_cash_requirement=risk_decision.authorized_cash_requirement,
+                active=True,
+                creation_timestamp=self._now(),
+            )
+            self.db.add(reservation)
+
+            order = OrderModel(
+                order_id=uuid.uuid4(),
+                correlation_id=risk_decision.correlation_id,
+                intent_id=intent_model.intent_id,
+                symbol=intent_model.symbol,
+                side=intent_model.side.value
+                if hasattr(intent_model.side, "value")
+                else intent_model.side,
+                order_type=intent_model.order_type.value
+                if hasattr(intent_model.order_type, "value")
+                else intent_model.order_type,
+                quantity=intent_model.quantity,
+                state=OrderState.SUBMITTED,
+            )
+            self.db.add(order)
+
+            await self.db.commit()
+            return True
+
+        except Exception:
             await self.db.rollback()
             return False
-
-        if risk_decision.authorized_cash_requirement > cash_available_for_authorization:
-            # Insufficient cash
-            await self.db.rollback()
-            return False
-
-        # 6. Atomically persist
-        decision_model = RiskDecisionModel(
-            decision_id=risk_decision.decision_id,
-            correlation_id=risk_decision.correlation_id,
-            signal_id=risk_decision.signal_id,
-            status=risk_decision.status,
-            trading_mode=risk_decision.trading_mode,
-            calculated_quantity=risk_decision.calculated_quantity,
-            calculated_risk=risk_decision.calculated_risk,
-            authorized_cash_requirement=risk_decision.authorized_cash_requirement,
-            risk_policy_version=risk_decision.risk_policy_version,
-            timestamp=risk_decision.timestamp,
-        )
-        self.db.add(decision_model)
-        await self.db.flush()
-
-        # Ensure order semantics come from the originating Signal
-        intent_id = uuid.uuid4()
-        time_in_force_value = signal.metadata.get("time_in_force", "GTC")
-        if time_in_force_value != "GTC":
-            raise ValueError(
-                f"K1 currently only supports GTC TimeInForce. Received: {time_in_force_value}"
-            )
-
-        intent_model = OrderIntentModel(
-            intent_id=intent_id,
-            correlation_id=risk_decision.correlation_id,
-            originating_signal_id=risk_decision.signal_id,
-            risk_decision_id=risk_decision.decision_id,
-            account_id=session.account_id,
-            symbol=signal.symbol,
-            side=signal.side.value if hasattr(signal.side, "value") else signal.side,
-            order_type=signal.order_type.value
-            if hasattr(signal.order_type, "value")
-            else signal.order_type,
-            quantity=risk_decision.calculated_quantity,
-            time_in_force=time_in_force_value,
-            idempotency_key=str(risk_decision.decision_id),
-            creation_timestamp=self._now(),
-        )
-        self.db.add(intent_model)
-        await self.db.flush()
-
-        reservation = CashReservationModel(
-            reservation_id=uuid.uuid4(),
-            session_id=session.session_id,
-            order_intent_id=intent_model.intent_id,
-            authorized_cash_requirement=risk_decision.authorized_cash_requirement,
-            active=True,
-            creation_timestamp=self._now(),
-        )
-        self.db.add(reservation)
-
-        order = OrderModel(
-            order_id=uuid.uuid4(),
-            correlation_id=risk_decision.correlation_id,
-            intent_id=intent_model.intent_id,
-            symbol=intent_model.symbol,
-            side=intent_model.side.value
-            if hasattr(intent_model.side, "value")
-            else intent_model.side,
-            order_type=intent_model.order_type.value
-            if hasattr(intent_model.order_type, "value")
-            else intent_model.order_type,
-            quantity=intent_model.quantity,
-            state=OrderState.SUBMITTED,
-        )
-        self.db.add(order)
-
-        await self.db.commit()
-        return True
 
     async def transaction_c_acknowledge(
         self,

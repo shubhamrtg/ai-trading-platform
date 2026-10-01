@@ -29,6 +29,7 @@ class MockQuoteProvider:
     async def get_live_quote(self, symbol: str) -> Decimal:
         return Decimal("50.0")
 
+
 @pytest.fixture
 def mock_adapter():
     return PaperExecutionAdapter(quote_provider=MockQuoteProvider(), fee_rate=Decimal("0.0"))
@@ -49,7 +50,7 @@ async def setup_session(db_session: AsyncSession):
         timeframe="1h",
         state=PaperSessionState.RUNNING,
         worker_owner_id=worker_id,
-        worker_heartbeat=_now()
+        worker_heartbeat=_now(),
     )
     db_session.add(session)
 
@@ -58,7 +59,7 @@ async def setup_session(db_session: AsyncSession):
         timestamp=_now() - timedelta(seconds=1),
         cash=Decimal("10000.0"),
         available_cash=Decimal("10000.0"),
-        equity=Decimal("10000.0")
+        equity=Decimal("10000.0"),
     )
     db_session.add(portfolio)
     await db_session.commit()
@@ -94,7 +95,7 @@ async def test_order_semantics_preserved(db_session: AsyncSession, mock_adapter,
         order_type=OrderType.LIMIT,
         signal_type="ENTRY",
         quantity=Decimal("1.5"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
 
     rd = RiskDecision(
@@ -107,7 +108,7 @@ async def test_order_semantics_preserved(db_session: AsyncSession, mock_adapter,
         calculated_risk=Decimal("0.0"),
         authorized_cash_requirement=Decimal("1000.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
 
     # Save SignalModel to satisfy FK
@@ -115,13 +116,17 @@ async def test_order_semantics_preserved(db_session: AsyncSession, mock_adapter,
     await db_session.commit()
 
     # Debug: Check signal
-    db_signal = await db_session.execute(select(SignalModel).where(SignalModel.signal_id == signal.signal_id))
+    db_signal = await db_session.execute(
+        select(SignalModel).where(SignalModel.signal_id == signal.signal_id)
+    )
     assert db_signal.scalar_one() is not None
 
     res = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, signal, rd)
     assert res is True
 
-    intent = await db_session.execute(select(OrderIntentModel).where(OrderIntentModel.correlation_id == signal.correlation_id))
+    intent = await db_session.execute(
+        select(OrderIntentModel).where(OrderIntentModel.correlation_id == signal.correlation_id)
+    )
     intent = intent.scalar_one()
 
     # Must preserve Signal semantics
@@ -147,7 +152,7 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
     db_session.add(SignalModel(**signal.model_dump(mode="python")))
     await db_session.commit()
@@ -159,7 +164,7 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         correlation_id=uuid.uuid4(),
         signal_id=signal.signal_id,
         status="APPROVED",
-        timestamp=_now()
+        timestamp=_now(),
     )
     db_session.add(fake_rd)
     await db_session.flush()
@@ -176,7 +181,7 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         quantity=Decimal("1.0"),
         time_in_force="GTC",
         idempotency_key=str(uuid.uuid4()),
-        creation_timestamp=_now()
+        creation_timestamp=_now(),
     )
     db_session.add(intent)
     await db_session.flush()
@@ -187,12 +192,10 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         order_intent_id=intent.intent_id,
         authorized_cash_requirement=Decimal("7000.0"),
         active=True,
-        creation_timestamp=_now()
+        creation_timestamp=_now(),
     )
     db_session.add(res)
     await db_session.commit()
-
-
 
     rd = RiskDecision(
         decision_id=uuid.uuid4(),
@@ -203,7 +206,7 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         calculated_quantity=Decimal("1.0"),
         authorized_cash_requirement=Decimal("4000.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
 
     await db_session.commit()
@@ -236,7 +239,7 @@ async def test_quote_authorization(db_session: AsyncSession, mock_adapter, setup
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("100.0"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
 
     rd = RiskDecision(
@@ -248,25 +251,31 @@ async def test_quote_authorization(db_session: AsyncSession, mock_adapter, setup
         calculated_quantity=Decimal("100.0"),
         authorized_cash_requirement=Decimal("5000.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
 
     db_session.add(SignalModel(**signal.model_dump(mode="python")))
     await db_session.commit()
     await orchestrator.transaction_b_reserve_cash(session_id, worker_id, signal, rd)
 
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id))
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id)
+    )
     order = order.scalar_one()
 
     # Actual cash req = 100 * 50 + 10 = 5010 > 5000 (rejected)
-    res = await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("50.0"), Decimal("10.0"))
+    res = await orchestrator.transaction_c_acknowledge(
+        session_id, worker_id, order.order_id, Decimal("50.0"), Decimal("10.0")
+    )
     assert res is False
 
     await db_session.flush()
     await db_session.refresh(order)
     assert order.state == OrderState.CANCELLED.value
 
-    reservation = await db_session.execute(select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id))
+    reservation = await db_session.execute(
+        select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id)
+    )
     reservation = reservation.scalar_one()
     assert reservation.active is False
 
@@ -288,7 +297,7 @@ async def test_economic_commit_and_fees(db_session: AsyncSession, mock_adapter, 
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("100.0"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
 
     rd = RiskDecision(
@@ -300,18 +309,22 @@ async def test_economic_commit_and_fees(db_session: AsyncSession, mock_adapter, 
         calculated_quantity=Decimal("100.0"),
         authorized_cash_requirement=Decimal("5000.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
 
     db_session.add(SignalModel(**signal.model_dump(mode="python")))
     await db_session.commit()
     await orchestrator.transaction_b_reserve_cash(session_id, worker_id, signal, rd)
 
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id))
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id)
+    )
     order = order.scalar_one()
 
     # 100 * 49 + 10 = 4910 <= 5000
-    res = await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("49.0"), Decimal("10.0"))
+    res = await orchestrator.transaction_c_acknowledge(
+        session_id, worker_id, order.order_id, Decimal("49.0"), Decimal("10.0")
+    )
     assert res is True
 
     await db_session.flush()
@@ -327,7 +340,11 @@ async def test_economic_commit_and_fees(db_session: AsyncSession, mock_adapter, 
     assert order.state == OrderState.FILLED.value
 
     # Verify portfolio
-    portfolios = await db_session.execute(select(PortfolioSnapshotModel).where(PortfolioSnapshotModel.account_id == account_id).order_by(PortfolioSnapshotModel.timestamp.desc()))
+    portfolios = await db_session.execute(
+        select(PortfolioSnapshotModel)
+        .where(PortfolioSnapshotModel.account_id == account_id)
+        .order_by(PortfolioSnapshotModel.timestamp.desc())
+    )
     portfolios = portfolios.scalars().all()
     assert len(portfolios) == 2
     latest = portfolios[0]
@@ -335,11 +352,15 @@ async def test_economic_commit_and_fees(db_session: AsyncSession, mock_adapter, 
     # Initial 10000 - 4910 = 5090
     assert latest.cash == Decimal("5090.0")
 
-    position = await db_session.execute(select(PositionModel).where(PositionModel.account_id == account_id))
+    position = await db_session.execute(
+        select(PositionModel).where(PositionModel.account_id == account_id)
+    )
     position = position.scalar_one()
     assert position.quantity == Decimal("100.0")
 
-    reservation = await db_session.execute(select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id))
+    reservation = await db_session.execute(
+        select(CashReservationModel).where(CashReservationModel.order_intent_id == order.intent_id)
+    )
     reservation = reservation.scalar_one()
     assert reservation.active is False
 
@@ -349,7 +370,9 @@ async def test_worker_lease(db_session: AsyncSession, mock_adapter, setup_sessio
     session_id, worker_id, account_id = setup_session
     orchestrator = PaperOrchestrator(db_session, mock_adapter)
 
-    session = await db_session.execute(select(PaperSessionModel).where(PaperSessionModel.session_id == session_id))
+    session = await db_session.execute(
+        select(PaperSessionModel).where(PaperSessionModel.session_id == session_id)
+    )
     session = session.scalar_one()
 
     assert await orchestrator.check_lease(session, worker_id) is True
@@ -379,7 +402,7 @@ async def test_kill_switch_race(db_session: AsyncSession, mock_adapter, setup_se
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
 
     rd = RiskDecision(
@@ -391,14 +414,16 @@ async def test_kill_switch_race(db_session: AsyncSession, mock_adapter, setup_se
         calculated_quantity=Decimal("1.0"),
         authorized_cash_requirement=Decimal("5000.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
 
     db_session.add(SignalModel(**signal.model_dump(mode="python")))
     await db_session.commit()
     await orchestrator.transaction_b_reserve_cash(session_id, worker_id, signal, rd)
 
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id))
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == rd.correlation_id)
+    )
     order = order.scalar_one()
 
     # Simulate kill switch
@@ -406,16 +431,22 @@ async def test_kill_switch_race(db_session: AsyncSession, mock_adapter, setup_se
     await db_session.commit()
 
     # Tx C should fail
-    res = await orchestrator.transaction_c_acknowledge(session_id, worker_id, order.order_id, Decimal("49.0"), Decimal("10.0"))
+    res = await orchestrator.transaction_c_acknowledge(
+        session_id, worker_id, order.order_id, Decimal("49.0"), Decimal("10.0")
+    )
     assert res is False
+
 
 @pytest.mark.asyncio
 async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setup_session):
     session_id, worker_id, account_id = setup_session
+
     class CustomMockAdapter:
         async def get_quote(self, symbol):
             from decimal import Decimal
+
             return Decimal("100.0"), Decimal("10.0")
+
     orchestrator = PaperOrchestrator(db_session, CustomMockAdapter())
 
     from unittest.mock import MagicMock
@@ -432,7 +463,7 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         high=Decimal("110.0"),
         low=Decimal("90.0"),
         close=Decimal("100.0"),
-        volume=Decimal("1.0")
+        volume=Decimal("1.0"),
     )
 
     signal = Signal(
@@ -447,14 +478,16 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"}
+        metadata={"source": "test"},
     )
 
     runner = MagicMock()
     runner.process_candle.return_value = signal
 
     position_sizer = MagicMock()
-    position_sizer.calculate_size.return_value = SizingResult(quantity=Decimal("2.0"), reason="Test", is_valid=True)
+    position_sizer.calculate_size.return_value = SizingResult(
+        quantity=Decimal("2.0"), reason="Test", is_valid=True
+    )
 
     risk_engine = MagicMock()
     risk_decision = RiskDecision(
@@ -467,7 +500,7 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         calculated_risk=Decimal("10.0"),
         authorized_cash_requirement=Decimal("250.0"),
         risk_policy_version="1.0",
-        timestamp=_now()
+        timestamp=_now(),
     )
     risk_engine.evaluate.return_value = risk_decision
     risk_policy = MagicMock()
@@ -482,10 +515,12 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         position_sizer=position_sizer,
         risk_engine=risk_engine,
         risk_policy=risk_policy,
-        is_complete=True
+        is_complete=True,
     )
 
-    order = await db_session.execute(select(OrderModel).where(OrderModel.correlation_id == signal.correlation_id))
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == signal.correlation_id)
+    )
     order = order.scalar_one_or_none()
     assert order is not None
     assert order.state == OrderState.FILLED.value

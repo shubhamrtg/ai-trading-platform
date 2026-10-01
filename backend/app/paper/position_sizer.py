@@ -13,9 +13,22 @@ class PositionSizer:
     """Position sizing utility."""
 
     def calculate_size(self, signal, portfolio_equity, current_position_quantity) -> SizingResult:
-        if signal.quantity is not None and signal.quantity > 0:
-            return SizingResult(quantity=signal.quantity)
-        return self.size_position(portfolio_equity, signal.proposed_entry_price)
+        # DO NOT allow arbitrary pre-populated quantity to bypass sizing policy.
+        allocation_fraction = signal.metadata.get("allocation_fraction")
+        risk_percent = signal.metadata.get("risk_percent")
+
+        if risk_percent is not None:
+            risk_percent = Decimal(str(risk_percent))
+        if allocation_fraction is not None:
+            allocation_fraction = Decimal(str(allocation_fraction))
+
+        return self.size_position(
+            portfolio_equity=portfolio_equity,
+            proposed_entry_price=signal.proposed_entry_price,
+            allocation_fraction=allocation_fraction,
+            risk_percent=risk_percent,
+            stop_loss=signal.stop_loss,
+        )
 
     @staticmethod
     def size_position(

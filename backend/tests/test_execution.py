@@ -41,7 +41,7 @@ def intent_factory():
             stop_loss=Decimal("45000.0"),
             take_profit=Decimal("60000.0"),
             confidence=0.9,
-            rationale="Test"
+            rationale="Test",
         )
 
         context = RiskContext(
@@ -54,7 +54,7 @@ def intent_factory():
             available_cash=Decimal("100000.0"),
             daily_pnl=Decimal("0.0"),
             trading_halted=False,
-            evaluated_at=datetime.now(UTC)
+            evaluated_at=datetime.now(UTC),
         )
 
         policy = RiskPolicy(
@@ -66,13 +66,14 @@ def intent_factory():
             max_risk_per_trade=Decimal("10000.0"),
             max_daily_loss=Decimal("5000.0"),
             max_drawdown_percent=Decimal("0.2"),
-            trading_halted=False
+            trading_halted=False,
         )
 
         engine = RiskEngine()
         decision = engine.evaluate(signal, context, policy)
 
         from app.execution.intent import build_order_intent
+
         return build_order_intent(signal, decision, "ACC1")
 
     return _create
@@ -139,6 +140,7 @@ def test_validation_zero_quantity(engine: ExecutionEngine):
     # Category B: Defensive execution validation test.
     # We mock ExecutableOrderIntent and OrderIntent to simulate untrusted/malformed data reaching the engine.
     from unittest.mock import MagicMock
+
     mock_exec = MagicMock(spec=ExecutableOrderIntent)
     mock_intent = MagicMock(spec=OrderIntent)
     mock_intent.symbol = "BTC-USD"
@@ -161,6 +163,7 @@ def test_validation_negative_quantity(engine: ExecutionEngine):
     # 20. Negative quantity rejected
     # Category B: Defensive execution validation test.
     from unittest.mock import MagicMock
+
     mock_exec = MagicMock(spec=ExecutableOrderIntent)
     mock_intent = MagicMock(spec=OrderIntent)
     mock_intent.symbol = "BTC-USD"
@@ -183,6 +186,7 @@ def test_validation_unsupported_order_type(engine: ExecutionEngine):
     # 22. Unsupported order type rejected
     # Category B: Defensive execution validation test.
     from unittest.mock import MagicMock
+
     mock_exec = MagicMock(spec=ExecutableOrderIntent)
     mock_intent = MagicMock(spec=OrderIntent)
     mock_intent.symbol = "BTC-USD"
@@ -204,6 +208,7 @@ def test_validation_invalid_price_semantics(engine: ExecutionEngine):
     # 23. Invalid price semantics rejected
     # Category B: Defensive execution validation test.
     from unittest.mock import MagicMock
+
     mock_exec = MagicMock(spec=ExecutableOrderIntent)
     mock_intent = MagicMock(spec=OrderIntent)
     mock_intent.symbol = "BTC-USD"
@@ -226,6 +231,7 @@ def test_validation_invalid_trading_mode(engine: ExecutionEngine):
     # 24. Invalid trading mode rejected (LIVE)
     # Category B: Defensive execution validation test.
     from unittest.mock import MagicMock
+
     mock_exec = MagicMock(spec=ExecutableOrderIntent)
     mock_intent = MagicMock(spec=OrderIntent)
     mock_intent.symbol = "BTC-USD"

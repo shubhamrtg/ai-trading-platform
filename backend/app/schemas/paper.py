@@ -22,6 +22,7 @@ class PaperSessionBase(BaseModel):
 
 class PaperSessionCreate(PaperSessionBase):
     """Request to create a paper session."""
+
     pass
 
 
@@ -55,4 +56,6 @@ class SizingResult(BaseModel):
 
     def __init__(self, **data: Any):
         super().__init__(**data)
-        self.is_valid = self.validation_error is None and self.quantity is not None and self.quantity > 0
+        self.is_valid = (
+            self.validation_error is None and self.quantity is not None and self.quantity > 0
+        )

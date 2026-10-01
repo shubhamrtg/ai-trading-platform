@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class HistoricalVendorClient(ABC):
     """Abstract interface for historical market data vendor clients.
-    
+
     Responsible for fetching and normalizing raw external data into Candle objects.
     """
 
@@ -22,13 +22,13 @@ class HistoricalVendorClient(ABC):
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> list[Candle]:
         """Fetch historical candles from the vendor.
-        
+
         Args:
             symbol: Trading pair symbol (e.g., 'AAPL', 'BTC-USD').
             timeframe: Candle interval (e.g., '1d', '1h').
             start_time: Start of the requested range (UTC).
             end_time: End of the requested range (UTC).
-            
+
         Returns:
             Chronological list of parsed Candle objects.
         """
@@ -86,16 +86,21 @@ class YahooFinanceClient(HistoricalVendorClient):
             if e.response.status_code == 404:
                 # Yahoo returns 404 for missing symbols
                 raise DataIntegrityError(f"Symbol {symbol} not found on Yahoo Finance (404)")
-            raise ProviderUnavailableError(f"Yahoo Finance returned error: {e.response.status_code}") from e
+            raise ProviderUnavailableError(
+                f"Yahoo Finance returned error: {e.response.status_code}"
+            ) from e
         except httpx.RequestError as e:
             raise ProviderUnavailableError(f"Failed to connect to Yahoo Finance: {e}") from e
 
         return self._parse_yahoo_response(symbol, timeframe, data)
 
-    def _parse_yahoo_response(self, symbol: str, timeframe: str, data: dict[str, object]) -> list[Candle]:
+    def _parse_yahoo_response(
+        self, symbol: str, timeframe: str, data: dict[str, object]
+    ) -> list[Candle]:
         try:
             # We use Any here to bypass strictly typed dictionary accesses since Yahoo responses are heavily nested
             from typing import Any, cast
+
             data_any = cast("Any", data)
             result = data_any["chart"]["result"]
             if not result:
@@ -104,7 +109,9 @@ class YahooFinanceClient(HistoricalVendorClient):
             chart_data = result[0]
 
             if "timestamp" not in chart_data or not chart_data["timestamp"]:
-                raise DataIntegrityError(f"Vendor response is missing the timestamp array for {symbol}")
+                raise DataIntegrityError(
+                    f"Vendor response is missing the timestamp array for {symbol}"
+                )
 
             timestamps = chart_data["timestamp"]
             indicators = chart_data["indicators"]["quote"][0]
@@ -120,15 +127,21 @@ class YahooFinanceClient(HistoricalVendorClient):
             for i, ts in enumerate(timestamps):
                 # Reject missing/invalid timestamps
                 if ts is None:
-                    raise DataIntegrityError(f"Missing timestamp in Yahoo Finance response for {symbol}")
+                    raise DataIntegrityError(
+                        f"Missing timestamp in Yahoo Finance response for {symbol}"
+                    )
 
                 # Reject null OHLC values
                 if opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
-                    raise DataIntegrityError(f"Null price value in Yahoo Finance response for {symbol} at {ts}")
+                    raise DataIntegrityError(
+                        f"Null price value in Yahoo Finance response for {symbol} at {ts}"
+                    )
 
                 # Check for negative prices or volumes
                 if opens[i] < 0 or highs[i] < 0 or lows[i] < 0 or closes[i] < 0:
-                    raise DataIntegrityError(f"Negative price in Yahoo Finance response for {symbol} at {ts}")
+                    raise DataIntegrityError(
+                        f"Negative price in Yahoo Finance response for {symbol} at {ts}"
+                    )
 
                 candle_time = datetime.fromtimestamp(ts, tz=UTC)
 
@@ -146,19 +159,31 @@ class YahooFinanceClient(HistoricalVendorClient):
                 )
 
                 # Explicit OHLC relationship validation
-                if candle.high < candle.low or candle.high < candle.open or candle.high < candle.close or candle.low > candle.open or candle.low > candle.close:
-                    raise DataIntegrityError(f"Invalid OHLC relationship for {symbol} at {candle_time}: O={candle.open}, H={candle.high}, L={candle.low}, C={candle.close}")
+                if (
+                    candle.high < candle.low
+                    or candle.high < candle.open
+                    or candle.high < candle.close
+                    or candle.low > candle.open
+                    or candle.low > candle.close
+                ):
+                    raise DataIntegrityError(
+                        f"Invalid OHLC relationship for {symbol} at {candle_time}: O={candle.open}, H={candle.high}, L={candle.low}, C={candle.close}"
+                    )
 
                 # Strict Chronology validation
                 if candles:
                     if candle.timestamp <= candles[-1].timestamp:
-                        raise ChronologyError(f"Non-chronological or duplicate timestamp from Yahoo Finance: {candle.timestamp} <= {candles[-1].timestamp}")
+                        raise ChronologyError(
+                            f"Non-chronological or duplicate timestamp from Yahoo Finance: {candle.timestamp} <= {candles[-1].timestamp}"
+                        )
 
                 candles.append(candle)
 
             return candles
 
         except KeyError as e:
-            raise DataIntegrityError(f"Unexpected Yahoo Finance response structure: missing {e}") from e
+            raise DataIntegrityError(
+                f"Unexpected Yahoo Finance response structure: missing {e}"
+            ) from e
         except Exception as e:
             raise DataIntegrityError(f"Failed to parse Yahoo Finance response: {e}") from e

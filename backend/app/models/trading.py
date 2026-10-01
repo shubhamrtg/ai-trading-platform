@@ -75,6 +75,7 @@ class SignalModel(Base):
     def to_domain(self) -> "Signal":
         from app.models.base import HistoricalDataIncompleteError
         from app.schemas.signal import Signal
+
         if self.order_type is None:
             raise HistoricalDataIncompleteError("Legacy Signal lacks order_type")
         if self.quantity is None:
@@ -122,7 +123,9 @@ class RiskDecisionModel(Base):
 
     calculated_risk: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
     calculated_quantity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
-    authorized_cash_requirement: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    authorized_cash_requirement: Mapped[Decimal | None] = mapped_column(
+        Numeric(24, 8), nullable=True
+    )
     risk_limit_applied: Mapped[str | None] = mapped_column(String, nullable=True)
     risk_policy_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -131,6 +134,7 @@ class RiskDecisionModel(Base):
     def to_domain(self) -> "RiskDecision":
         from app.models.base import HistoricalDataIncompleteError
         from app.schemas.risk import RiskDecision
+
         if self.trading_mode is None:
             raise HistoricalDataIncompleteError("Legacy RiskDecision lacks trading_mode")
         if self.risk_policy_version is None:

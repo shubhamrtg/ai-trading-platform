@@ -43,7 +43,9 @@ class ExecutableOrderIntent:
 
     def __init__(self, intent: OrderIntent, decision: RiskDecision):
         if decision.status != RiskDecisionStatus.APPROVED:
-            raise RejectedRiskDecisionError("Cannot create executable intent from rejected decision.")
+            raise RejectedRiskDecisionError(
+                "Cannot create executable intent from rejected decision."
+            )
 
         from app.execution._provenance import _verify_exact_decision_provenance
 

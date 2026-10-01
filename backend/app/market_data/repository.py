@@ -37,14 +37,11 @@ class CandleRepository:
         self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
     ) -> set[datetime]:
         """Get a set of timestamps that already exist in the database for the given range."""
-        stmt = (
-            select(CandleModel.timestamp)
-            .where(
-                CandleModel.symbol == symbol,
-                CandleModel.timeframe == timeframe,
-                CandleModel.timestamp >= start_time,
-                CandleModel.timestamp <= end_time,
-            )
+        stmt = select(CandleModel.timestamp).where(
+            CandleModel.symbol == symbol,
+            CandleModel.timeframe == timeframe,
+            CandleModel.timestamp >= start_time,
+            CandleModel.timestamp <= end_time,
         )
         result = await self.session.execute(stmt)
         return set(result.scalars().all())
@@ -54,6 +51,7 @@ class CandleRepository:
         """Create a deterministic fingerprint based on the canonical ordered timestamps."""
         import hashlib
         from datetime import UTC
+
         # Normalize to UTC and sort to ensure deterministic hashing
         normalized = sorted([ts.astimezone(UTC).isoformat() for ts in timestamps])
         hasher = hashlib.sha256()
@@ -80,8 +78,7 @@ class CandleRepository:
                 MarketDataCoverageModel.end_time >= end_time,
             )
             .order_by(
-                MarketDataCoverageModel.start_time.desc(),
-                MarketDataCoverageModel.end_time.asc()
+                MarketDataCoverageModel.start_time.desc(), MarketDataCoverageModel.end_time.asc()
             )
         )
         result = await self.session.execute(stmt)
@@ -151,6 +148,7 @@ class CandleRepository:
 
         if not timestamps:
             from app.market_data.exceptions import DataIntegrityError
+
             raise DataIntegrityError("Cannot mark range covered: no persisted timestamps found.")
 
         min_ts = min(timestamps)
@@ -167,7 +165,10 @@ class CandleRepository:
 
         if min_ts > start_time or max_ts < end_time:
             from app.market_data.exceptions import DataIntegrityError
-            raise DataIntegrityError("Cannot mark range covered: persisted boundaries do not span the requested range.")
+
+            raise DataIntegrityError(
+                "Cannot mark range covered: persisted boundaries do not span the requested range."
+            )
 
         actual_count = len(timestamps)
         fingerprint = self._compute_fingerprint(timestamps)
@@ -205,24 +206,40 @@ class CandleRepository:
                     if hasattr(e, "orig") and e.orig is not None:
                         # Check for specific unique constraint violation code and constraint name
                         # postgresql uses sqlstate 23505 for unique violation
-                        if getattr(e.orig, "sqlstate", None) == "23505" and getattr(e.orig, "constraint_name", None) == "uq_candle_identity":
+                        if (
+                            getattr(e.orig, "sqlstate", None) == "23505"
+                            and getattr(e.orig, "constraint_name", None) == "uq_candle_identity"
+                        ):
                             is_expected = True
                         # Sometimes it is under pgcode
-                        if getattr(e.orig, "pgcode", None) == "23505" and "uq_candle_identity" in str(e.orig):
+                        if getattr(
+                            e.orig, "pgcode", None
+                        ) == "23505" and "uq_candle_identity" in str(e.orig):
                             is_expected = True
                     # Fallback for some drivers where it's in the message
-                    if hasattr(e, "orig") and e.orig is not None and "duplicate key value violates unique constraint" in str(e.orig) and "uq_candle_identity" in str(e.orig):
+                    if (
+                        hasattr(e, "orig")
+                        and e.orig is not None
+                        and "duplicate key value violates unique constraint" in str(e.orig)
+                        and "uq_candle_identity" in str(e.orig)
+                    ):
                         is_expected = True
                 else:
                     # For SQLite
-                    err_str = str(e.orig).lower() if hasattr(e, "orig") and e.orig else str(e).lower()
+                    err_str = (
+                        str(e.orig).lower() if hasattr(e, "orig") and e.orig else str(e).lower()
+                    )
                     if "unique constraint failed" in err_str:
                         # SQLite explicitly names the columns or constraint
-                        if "uq_candle_identity" in err_str or ("symbol" in err_str and "timestamp" in err_str):
+                        if "uq_candle_identity" in err_str or (
+                            "symbol" in err_str and "timestamp" in err_str
+                        ):
                             is_expected = True
 
                 if not is_expected:
                     # Propagate unrelated integrity failures (NOT NULL, foreign key, etc.)
                     raise e
 
-                logger.debug(f"Ignored expected duplicate insert for {model.symbol} at {model.timestamp}")
+                logger.debug(
+                    f"Ignored expected duplicate insert for {model.symbol} at {model.timestamp}"
+                )

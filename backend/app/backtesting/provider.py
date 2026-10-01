@@ -39,12 +39,13 @@ class DummyMarketDataProvider(MarketDataProvider):
         elif timeframe == "1m":
             delta = timedelta(minutes=1)
         else:
-            delta = timedelta(days=1) # default to 1d
+            delta = timedelta(days=1)  # default to 1d
 
         i = 0
-        while current_time <= end_time and i < 10000: # cap at 10,000 to prevent runaway loops
+        while current_time <= end_time and i < 10000:  # cap at 10,000 to prevent runaway loops
             # Provide some simulated wave pattern for prices so MAs actually cross over
             import math
+
             wave = Decimal(math.sin(i / 5.0) * 10)
 
             yield Candle(

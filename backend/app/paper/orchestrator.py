@@ -29,6 +29,8 @@ from app.schemas.signal import Signal
 class PaperOrchestrator:
     """Orchestrates paper session lifecycle and execution transactions."""
 
+    LEASE_DURATION_SECONDS = 30
+
     def __init__(self, db: AsyncSession, adapter: PaperExecutionAdapter):
         self.db = db
         self.adapter = adapter
@@ -47,8 +49,7 @@ class PaperOrchestrator:
         heartbeat = session.worker_heartbeat
         if heartbeat.tzinfo is None:
             heartbeat = heartbeat.replace(tzinfo=UTC)
-        # Suppose a 30s lease timeout for this architecture validation
-        if (self._now() - heartbeat).total_seconds() > 30:
+        if (self._now() - heartbeat).total_seconds() > self.LEASE_DURATION_SECONDS:
             return False
 
         return True
@@ -64,7 +65,9 @@ class PaperOrchestrator:
         if not session:
             return False
 
-        if session.worker_owner_id is None or not await self.check_lease(session, session.worker_owner_id):
+        if session.worker_owner_id is None or not await self.check_lease(
+            session, session.worker_owner_id
+        ):
             session.worker_owner_id = worker_id
             session.worker_heartbeat = self._now()
             await self.db.commit()
@@ -128,7 +131,10 @@ class PaperOrchestrator:
             return False
 
         # Validate Lineage (Blocker 4)
-        if risk_decision.signal_id != signal.signal_id or risk_decision.correlation_id != signal.correlation_id:
+        if (
+            risk_decision.signal_id != signal.signal_id
+            or risk_decision.correlation_id != signal.correlation_id
+        ):
             await self.db.rollback()
             return False
 
@@ -161,8 +167,9 @@ class PaperOrchestrator:
         # 3. Sum authoritative active reservations for this account
         # First we need all session_ids for this account to find their active reservations
         account_sessions = await self.db.execute(
-            select(PaperSessionModel.session_id)
-            .where(PaperSessionModel.account_id == session.account_id)
+            select(PaperSessionModel.session_id).where(
+                PaperSessionModel.account_id == session.account_id
+            )
         )
         account_session_ids = [row[0] for row in account_sessions.all()]
 
@@ -208,6 +215,12 @@ class PaperOrchestrator:
 
         # Ensure order semantics come from the originating Signal
         intent_id = uuid.uuid4()
+        time_in_force_value = signal.metadata.get("time_in_force", "GTC")
+        if time_in_force_value != "GTC":
+            raise ValueError(
+                f"K1 currently only supports GTC TimeInForce. Received: {time_in_force_value}"
+            )
+
         intent_model = OrderIntentModel(
             intent_id=intent_id,
             correlation_id=risk_decision.correlation_id,
@@ -215,10 +228,12 @@ class PaperOrchestrator:
             risk_decision_id=risk_decision.decision_id,
             account_id=session.account_id,
             symbol=signal.symbol,
-            side=signal.side.value if hasattr(signal.side, 'value') else signal.side,
-            order_type=signal.order_type.value if hasattr(signal.order_type, 'value') else signal.order_type,
+            side=signal.side.value if hasattr(signal.side, "value") else signal.side,
+            order_type=signal.order_type.value
+            if hasattr(signal.order_type, "value")
+            else signal.order_type,
             quantity=risk_decision.calculated_quantity,
-            time_in_force="GTC",
+            time_in_force=time_in_force_value,
             idempotency_key=str(risk_decision.decision_id),
             creation_timestamp=self._now(),
         )
@@ -240,8 +255,12 @@ class PaperOrchestrator:
             correlation_id=risk_decision.correlation_id,
             intent_id=intent_model.intent_id,
             symbol=intent_model.symbol,
-            side=intent_model.side.value if hasattr(intent_model.side, 'value') else intent_model.side,
-            order_type=intent_model.order_type.value if hasattr(intent_model.order_type, 'value') else intent_model.order_type,
+            side=intent_model.side.value
+            if hasattr(intent_model.side, "value")
+            else intent_model.side,
+            order_type=intent_model.order_type.value
+            if hasattr(intent_model.order_type, "value")
+            else intent_model.order_type,
             quantity=intent_model.quantity,
             state=OrderState.SUBMITTED,
         )
@@ -302,19 +321,19 @@ class PaperOrchestrator:
             ) + actual_execution_fees
 
         if actual_execution_cash_requirement <= reservation.authorized_cash_requirement:
-            validate_order_transition(order.state, 'ACKNOWLEDGED')
-            order.state = 'ACKNOWLEDGED'
+            validate_order_transition(order.state, "ACKNOWLEDGED")
+            order.state = "ACKNOWLEDGED"
             order.execution_price = actual_execution_price
             order.execution_fee = actual_execution_fees
             await self.db.commit()
             return True
         else:
-            validate_order_transition(order.state, 'CANCEL_PENDING')
-            order.state = 'CANCEL_PENDING'
+            validate_order_transition(order.state, "CANCEL_PENDING")
+            order.state = "CANCEL_PENDING"
             await self.db.flush()
 
-            validate_order_transition(order.state, 'CANCELLED')
-            order.state = 'CANCELLED'
+            validate_order_transition(order.state, "CANCELLED")
+            order.state = "CANCELLED"
             reservation.active = False
             reservation.released_timestamp = self._now()
             await self.db.commit()
@@ -414,7 +433,9 @@ class PaperOrchestrator:
 
             new_cash = portfolio.cash + proceeds - actual_execution_fees
             new_equity = portfolio.equity + realized_pnl - actual_execution_fees
-            new_exposure = portfolio.total_exposure - (order.quantity * position.average_entry_price)
+            new_exposure = portfolio.total_exposure - (
+                order.quantity * position.average_entry_price
+            )
             new_realized = portfolio.total_realized_pnl + realized_pnl
         else:
             actual_cash_spent = (order.quantity * order.execution_price) + actual_execution_fees
@@ -429,7 +450,7 @@ class PaperOrchestrator:
                     quantity=order.quantity,
                     average_entry_price=order.execution_price,
                     strategy_id=session.strategy_id,
-                    entry_signal_id=intent.originating_signal_id
+                    entry_signal_id=intent.originating_signal_id,
                 )
                 self.db.add(position)
             else:
@@ -444,28 +465,49 @@ class PaperOrchestrator:
             new_exposure = portfolio.total_exposure + (order.quantity * order.execution_price)
             new_realized = portfolio.total_realized_pnl
 
+        # Set reservation to inactive before querying remaining active reservations
+        reservation.active = False
+        reservation.released_timestamp = self._now()
+        await self.db.flush()
+
+        from sqlalchemy import func
+
+        account_sessions = await self.db.execute(
+            select(PaperSessionModel.session_id).where(
+                PaperSessionModel.account_id == portfolio.account_id
+            )
+        )
+        account_session_ids = [row[0] for row in account_sessions.all()]
+
+        if account_session_ids:
+            active_res = await self.db.execute(
+                select(func.sum(CashReservationModel.authorized_cash_requirement))
+                .where(CashReservationModel.session_id.in_(account_session_ids))
+                .where(CashReservationModel.active == True)
+            )
+            remaining_reserved_cash = active_res.scalar() or Decimal("0.0")
+        else:
+            remaining_reserved_cash = Decimal("0.0")
+
         # Create new portfolio snapshot reflecting the economic commit
         new_portfolio = PortfolioSnapshotModel(
             snapshot_id=uuid.uuid4(),
             account_id=portfolio.account_id,
             timestamp=self._now(),
             cash=new_cash,
-            available_cash=new_cash,  # Base available cash, gets modified by reservations elsewhere
+            available_cash=new_cash - remaining_reserved_cash,
             equity=new_equity,
             total_realized_pnl=new_realized,
-            total_unrealized_pnl=portfolio.total_unrealized_pnl, # Updated externally
+            total_unrealized_pnl=portfolio.total_unrealized_pnl,  # Updated externally
             total_exposure=new_exposure,
-            reserved_capital=Decimal("0.0") # We don't maintain aggregate reserved_capital here, we compute it on the fly
+            reserved_capital=remaining_reserved_cash,
         )
         self.db.add(new_portfolio)
 
-        validate_order_transition(order.state, 'FILLED')
-        order.state = 'FILLED'
+        validate_order_transition(order.state, "FILLED")
+        order.state = "FILLED"
         order.filled_quantity = order.quantity
         order.average_fill_price = order.execution_price
-
-        reservation.active = False
-        reservation.released_timestamp = self._now()
 
         await self.db.commit()
         return True
@@ -479,7 +521,7 @@ class PaperOrchestrator:
         position_sizer,
         risk_engine,
         risk_policy,
-        is_complete: bool = True
+        is_complete: bool = True,
     ) -> None:
         """K1 paper trading orchestration loop."""
         if not is_complete:
@@ -501,6 +543,40 @@ class PaperOrchestrator:
 
         if session.state != PaperSessionState.RUNNING:
             return
+
+        # ---------------------------------------------------------
+        # RECOVERY: Retry pending SUBMITTED orders
+        # ---------------------------------------------------------
+        pending_orders = await self.db.execute(
+            select(OrderModel)
+            .join(OrderIntentModel, OrderIntentModel.intent_id == OrderModel.intent_id)
+            .join(
+                CashReservationModel,
+                CashReservationModel.order_intent_id == OrderIntentModel.intent_id,
+            )
+            .where(CashReservationModel.session_id == session_id)
+            .where(OrderModel.state == "SUBMITTED")
+        )
+        for pending_order in pending_orders.scalars().all():
+            try:
+                quote_price, quote_fees = await self.adapter.get_quote(pending_order.symbol)
+            except Exception:
+                continue
+
+            success = await self.transaction_c_acknowledge(
+                session_id=session_id,
+                worker_id=worker_id,
+                order_id=pending_order.order_id,
+                actual_execution_price=quote_price,
+                actual_execution_fees=quote_fees,
+            )
+            if success:
+                await self.transaction_d_fill(
+                    session_id=session_id,
+                    worker_id=worker_id,
+                    order_id=pending_order.order_id,
+                )
+        # ---------------------------------------------------------
 
         # Canonical deduplication / chronological check
         # Fetch last processed event for this session
@@ -560,19 +636,23 @@ class PaperOrchestrator:
         pos = pos.scalar_one_or_none()
         current_pos_qty = pos.quantity if pos else Decimal("0.0")
 
+        from app.schemas.paper import SizingResult
+
         try:
             sizing_result = position_sizer.calculate_size(
                 signal=signal,
                 portfolio_equity=portfolio.equity,
-                current_position_quantity=current_pos_qty
+                current_position_quantity=current_pos_qty,
             )
-            signal.quantity = sizing_result.quantity
-        except Exception:
-            return
+            if sizing_result.is_valid:
+                signal.quantity = sizing_result.quantity
+        except Exception as e:
+            sizing_result = SizingResult(validation_error=f"Unexpected error during sizing: {e}")
 
         # 3. Risk Engine
         from app.config.settings import TradingMode
         from app.schemas.risk import RiskContext
+
         risk_context = RiskContext(
             portfolio_equity=portfolio.equity,
             available_cash=portfolio.available_cash,
@@ -586,7 +666,9 @@ class PaperOrchestrator:
         )
 
         # RiskEngine is pure
-        risk_decision = risk_engine.evaluate(signal, risk_context, risk_policy)
+        risk_decision = risk_engine.evaluate(
+            signal, risk_context, risk_policy, sizing_result=sizing_result
+        )
 
         # We must explicitly save SignalModel to satisfy FK constraints before transaction_b
         # We convert enum values properly using mode="python"
@@ -612,7 +694,9 @@ class PaperOrchestrator:
         except Exception:
             return
 
-        res_c = await self.transaction_c_acknowledge(session_id, worker_id, order.order_id, quote_price, quote_fees)
+        res_c = await self.transaction_c_acknowledge(
+            session_id, worker_id, order.order_id, quote_price, quote_fees
+        )
         if not res_c:
             return
 

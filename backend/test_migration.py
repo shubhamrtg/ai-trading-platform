@@ -119,6 +119,7 @@ def test_migration_unmappable_order(setup_base_db):
     ):
         run_alembic(command.upgrade, "head")
 
+
 def test_phase_h_migration(setup_base_db):
     db_path = setup_base_db
 
@@ -129,17 +130,27 @@ def test_phase_h_migration(setup_base_db):
     cur = conn.cursor()
 
     # Pre-populate required base entities
-    cur.execute("INSERT INTO strategies (strategy_id, name, status, created_at, updated_at) VALUES ('S1', 'Strat1', 'DRAFT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
-    cur.execute("INSERT INTO strategy_versions (strategy_id, version, status, supported_asset_classes, supported_timeframes, required_indicators, parameters_schema, created_at, updated_at) VALUES ('S1', '1.0', 'ACTIVE', '[]', '[]', '[]', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+    cur.execute(
+        "INSERT INTO strategies (strategy_id, name, status, created_at, updated_at) VALUES ('S1', 'Strat1', 'DRAFT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    cur.execute(
+        "INSERT INTO strategy_versions (strategy_id, version, status, supported_asset_classes, supported_timeframes, required_indicators, parameters_schema, created_at, updated_at) VALUES ('S1', '1.0', 'ACTIVE', '[]', '[]', '[]', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
 
     def insert_signal(sig_id):
-        cur.execute(f"INSERT INTO signals (signal_id, correlation_id, strategy_id, strategy_version, symbol, timestamp, timeframe, side, signal_type, metadata_json, created_at, updated_at) VALUES ('{sig_id}', '{sig_id}', 'S1', '1.0', 'BTC', CURRENT_TIMESTAMP, '1h', 'BUY', 'ENTRY', '{{}}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        cur.execute(
+            f"INSERT INTO signals (signal_id, correlation_id, strategy_id, strategy_version, symbol, timestamp, timeframe, side, signal_type, metadata_json, created_at, updated_at) VALUES ('{sig_id}', '{sig_id}', 'S1', '1.0', 'BTC', CURRENT_TIMESTAMP, '1h', 'BUY', 'ENTRY', '{{}}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
 
     def insert_decision(dec_id, sig_id):
-        cur.execute(f"INSERT INTO risk_decisions (decision_id, correlation_id, signal_id, status, timestamp, created_at, updated_at) VALUES ('{dec_id}', '{sig_id}', '{sig_id}', 'APPROVED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        cur.execute(
+            f"INSERT INTO risk_decisions (decision_id, correlation_id, signal_id, status, timestamp, created_at, updated_at) VALUES ('{dec_id}', '{sig_id}', '{sig_id}', 'APPROVED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
 
     def insert_intent(intent_id, sig_id, dec_id, order_type):
-        cur.execute(f"INSERT INTO order_intents (intent_id, correlation_id, originating_signal_id, risk_decision_id, account_id, symbol, side, order_type, quantity, time_in_force, idempotency_key, creation_timestamp, created_at, updated_at) VALUES ('{intent_id}', '{sig_id}', '{sig_id}', '{dec_id}', 'ACC1', 'BTC', 'BUY', '{order_type}', 1.0, 'GTC', '{intent_id}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        cur.execute(
+            f"INSERT INTO order_intents (intent_id, correlation_id, originating_signal_id, risk_decision_id, account_id, symbol, side, order_type, quantity, time_in_force, idempotency_key, creation_timestamp, created_at, updated_at) VALUES ('{intent_id}', '{sig_id}', '{sig_id}', '{dec_id}', 'ACC1', 'BTC', 'BUY', '{order_type}', 1.0, 'GTC', '{intent_id}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
 
     # Case A: 1 matching OrderIntent -> LIMIT
     sigA, decA, intA = "sigA", "decA", "intA"
@@ -176,8 +187,10 @@ def test_phase_h_migration(setup_base_db):
     insert_intent(intE2, sigE, decE2, "MARKET")
 
     def insert_intent_qty(intent_id, sig_id, dec_id, order_type, qty):
-        qty_str = str(qty) if qty is not None else 'NULL'
-        cur.execute(f"INSERT INTO order_intents (intent_id, correlation_id, originating_signal_id, risk_decision_id, account_id, symbol, side, order_type, quantity, time_in_force, idempotency_key, creation_timestamp, created_at, updated_at) VALUES ('{intent_id}', '{sig_id}', '{sig_id}', '{dec_id}', 'ACC1', 'BTC', 'BUY', '{order_type}', {qty_str}, 'GTC', '{intent_id}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        qty_str = str(qty) if qty is not None else "NULL"
+        cur.execute(
+            f"INSERT INTO order_intents (intent_id, correlation_id, originating_signal_id, risk_decision_id, account_id, symbol, side, order_type, quantity, time_in_force, idempotency_key, creation_timestamp, created_at, updated_at) VALUES ('{intent_id}', '{sig_id}', '{sig_id}', '{dec_id}', 'ACC1', 'BTC', 'BUY', '{order_type}', {qty_str}, 'GTC', '{intent_id}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
 
     # Qty Case A: 1 matching -> 100
     sigQA, decQA, intQA = "sigQA", "decQA", "intQA"
@@ -215,7 +228,10 @@ def test_phase_h_migration(setup_base_db):
         return cur.fetchone()
 
     def get_dec(did):
-        cur.execute("SELECT trading_mode, risk_policy_version FROM risk_decisions WHERE decision_id=?", (did,))
+        cur.execute(
+            "SELECT trading_mode, risk_policy_version FROM risk_decisions WHERE decision_id=?",
+            (did,),
+        )
         return cur.fetchone()
 
     # Verify Case A
@@ -239,4 +255,4 @@ def test_phase_h_migration(setup_base_db):
     # Verify Qty Case B
     assert get_sig(sigQB) == (None, 100)  # Distinct order types but same qty
     # Verify Qty Case C
-    assert get_sig(sigQC) == (None, None) # Both order type and qty are ambiguous
+    assert get_sig(sigQC) == (None, None)  # Both order type and qty are ambiguous

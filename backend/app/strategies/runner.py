@@ -151,7 +151,7 @@ class StrategyRunner:
                 timestamp=candle.timestamp,
                 timeframe=draft.timeframe,
                 side=draft.side,
-            order_type=draft.order_type,
+                order_type=draft.order_type,
                 signal_type=draft.signal_type,
                 quantity=draft.quantity,
                 proposed_entry_price=draft.proposed_entry_price,
@@ -159,7 +159,7 @@ class StrategyRunner:
                 take_profit=draft.take_profit,
                 confidence=draft.confidence,
                 rationale=draft.rationale,
-                metadata={"source": "StrategyRunner"},
+                metadata={"source": "StrategyRunner", **self.parameters.model_dump(mode="json")},
             )
 
         except StrategyValidationError:

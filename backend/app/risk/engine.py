@@ -64,10 +64,16 @@ class RiskEngine:
         canonical_string = json.dumps(state, sort_keys=True, separators=(",", ":"))
         return uuid.uuid5(uuid.NAMESPACE_OID, canonical_string)
 
-    def evaluate(self, signal: Signal, context: RiskContext, policy: RiskPolicy) -> RiskDecision:
+    def evaluate(
+        self, signal: Signal, context: RiskContext, policy: RiskPolicy, sizing_result=None
+    ) -> RiskDecision:
         """Evaluate a signal against the policy and context."""
         rejection_codes: list[RiskRejectionCode] = []
         rejection_reasons: list[str] = []
+
+        if sizing_result is not None and not sizing_result.is_valid:
+            rejection_codes.append(RiskRejectionCode.INVALID_SIGNAL)
+            rejection_reasons.append(f"Position sizing failed: {sizing_result.validation_error}")
 
         # 1. HARD GATE: Global Trading Halt
         # Prevent duplicate TRADING_HALTED codes
@@ -204,10 +210,38 @@ class RiskEngine:
         authorized_cash_requirement = None
         if signal.proposed_entry_price is not None:
             if signal.stop_loss is not None:
-                calculated_risk = abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
+                calculated_risk = (
+                    abs(signal.proposed_entry_price - signal.stop_loss) * signal.quantity
+                )
 
             # V3.8: Cash authorized = (quantity * proposed_entry_price) + transaction_cost_allowance
-            authorized_cash_requirement = (signal.quantity * signal.proposed_entry_price) + policy.transaction_cost_allowance
+            if signal.side == OrderSide.BUY:
+                authorized_cash_requirement = (
+                    signal.quantity * signal.proposed_entry_price
+                ) + policy.transaction_cost_allowance
+            else:
+                authorized_cash_requirement = policy.transaction_cost_allowance
+
+            if authorized_cash_requirement > context.available_cash:
+                rejection_codes.append(RiskRejectionCode.INSUFFICIENT_CASH)
+                rejection_reasons.append(
+                    f"Authorized cash requirement {authorized_cash_requirement} exceeds available cash {context.available_cash}"
+                )
+                return RiskDecision(
+                    decision_id=deterministic_id,
+                    correlation_id=signal.correlation_id,
+                    signal_id=signal.signal_id,
+                    status=RiskDecisionStatus.REJECTED,
+                    risk_policy_version=policy.version,
+                    trading_mode=context.trading_mode,
+                    rejection_codes=rejection_codes,
+                    rejection_reasons=rejection_reasons,
+                    calculated_quantity=None,
+                    calculated_risk=None,
+                    authorized_cash_requirement=None,
+                    risk_limit_applied=None,
+                    timestamp=context.evaluated_at,
+                )
 
         decision = RiskDecision(
             decision_id=deterministic_id,
@@ -226,6 +260,7 @@ class RiskEngine:
         if decision.status == RiskDecisionStatus.APPROVED:
             # Register exact object identity internally
             from app.execution._provenance import _register_approved_decision
+
             _register_approved_decision(decision)
 
         return decision

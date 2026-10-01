@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 import weakref
 from typing import Any
 
@@ -8,10 +8,12 @@ from typing import Any
 _lock = threading.Lock()
 _registry: "weakref.WeakValueDictionary[int, Any]" = weakref.WeakValueDictionary()
 
+
 def _register_approved_decision(decision: Any) -> None:
     """Internal registration of a genuine RiskEngine approved decision by exact object identity."""
     with _lock:
         _registry[id(decision)] = decision
+
 
 def _verify_exact_decision_provenance(decision: Any) -> bool:
     """Internal verification that the exact object was registered by RiskEngine."""

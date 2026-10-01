@@ -25,7 +25,7 @@ def base_policy() -> RiskPolicy:
         max_daily_loss=Decimal("2000.0"),
         max_drawdown_percent=Decimal("0.1"),
         trading_halted=False,
-            )
+    )
 
 
 @pytest.fixture
@@ -118,11 +118,17 @@ def test_max_order_quantity(
     engine = RiskEngine()
     # Below limit
     base_signal_below = base_signal.model_copy(update={"quantity": Decimal("9.9")})
-    assert engine.evaluate(base_signal_below, base_context, base_policy).status == RiskDecisionStatus.APPROVED
+    assert (
+        engine.evaluate(base_signal_below, base_context, base_policy).status
+        == RiskDecisionStatus.APPROVED
+    )
 
     # Exactly at limit
     base_signal_at = base_signal.model_copy(update={"quantity": Decimal("10.0")})
-    assert engine.evaluate(base_signal_at, base_context, base_policy).status == RiskDecisionStatus.APPROVED
+    assert (
+        engine.evaluate(base_signal_at, base_context, base_policy).status
+        == RiskDecisionStatus.APPROVED
+    )
 
     # Above limit
     base_signal_above = base_signal.model_copy(update={"quantity": Decimal("10.1")})
@@ -140,11 +146,16 @@ def test_max_position(
 
     # Below limit (10 + 39 = 49)
     base_signal_below = base_signal.model_copy(update={"quantity": Decimal("39.0")})
-    assert engine.evaluate(base_signal_below, base_context, policy).status == RiskDecisionStatus.APPROVED
+    assert (
+        engine.evaluate(base_signal_below, base_context, policy).status
+        == RiskDecisionStatus.APPROVED
+    )
 
     # Exactly at limit (10 + 40 = 50)
     base_signal_at = base_signal.model_copy(update={"quantity": Decimal("40.0")})
-    assert engine.evaluate(base_signal_at, base_context, policy).status == RiskDecisionStatus.APPROVED
+    assert (
+        engine.evaluate(base_signal_at, base_context, policy).status == RiskDecisionStatus.APPROVED
+    )
 
     # Above limit (10 + 41 = 51)
     base_signal_above = base_signal.model_copy(update={"quantity": Decimal("41.0")})
@@ -153,7 +164,9 @@ def test_max_position(
     assert RiskRejectionCode.MAX_POSITION_EXCEEDED in decision.rejection_codes
 
     # Invalid sell beyond held position (long-only semantics)
-    sell_signal = base_signal.model_copy(update={"side": OrderSide.SELL, "quantity": Decimal("11.0")})
+    sell_signal = base_signal.model_copy(
+        update={"side": OrderSide.SELL, "quantity": Decimal("11.0")}
+    )
     decision_sell = engine.evaluate(sell_signal, base_context, policy)
     assert decision_sell.status == RiskDecisionStatus.REJECTED
     assert RiskRejectionCode.UNSUPPORTED_ORDER_SEMANTICS in decision_sell.rejection_codes
@@ -163,7 +176,13 @@ def test_exposure_buy(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    policy = base_policy.model_copy(update={"max_order_quantity": Decimal("1000.0"), "max_position_quantity": Decimal("1000.0"), "max_risk_per_trade": Decimal("0.0")})
+    policy = base_policy.model_copy(
+        update={
+            "max_order_quantity": Decimal("1000.0"),
+            "max_position_quantity": Decimal("1000.0"),
+            "max_risk_per_trade": Decimal("0.0"),
+        }
+    )
 
     # Current exposure = 1000
     # Max exposure = 10000
@@ -184,11 +203,19 @@ def test_exposure_sell_reducing(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     engine = RiskEngine()
-    policy = base_policy.model_copy(update={"max_order_quantity": Decimal("1000.0"), "max_position_quantity": Decimal("1000.0"), "max_risk_per_trade": Decimal("0.0")})
+    policy = base_policy.model_copy(
+        update={
+            "max_order_quantity": Decimal("1000.0"),
+            "max_position_quantity": Decimal("1000.0"),
+            "max_risk_per_trade": Decimal("0.0"),
+        }
+    )
 
     # Sell should reduce exposure and not be blocked by exposure limit
     # Suppose current exposure is 15000 (already above limit 10000)
-    ctx_over = base_context.model_copy(update={"current_exposure": Decimal("15000.0"), "current_position": Decimal("150.0")})
+    ctx_over = base_context.model_copy(
+        update={"current_exposure": Decimal("15000.0"), "current_position": Decimal("150.0")}
+    )
 
     # A BUY would fail because it increases exposure over 10000
     sig_buy = base_signal.model_copy(update={"quantity": Decimal("1.0")})
@@ -220,16 +247,24 @@ def test_trade_risk(
     engine = RiskEngine()
 
     # Below maximum: price=100, stop=50 -> risk=50 * 9 = 450 <= 500
-    sig_below = base_signal.model_copy(update={"quantity": Decimal("9.0"), "stop_loss": Decimal("50.0")})
-    assert engine.evaluate(sig_below, base_context, base_policy).status == RiskDecisionStatus.APPROVED
+    sig_below = base_signal.model_copy(
+        update={"quantity": Decimal("9.0"), "stop_loss": Decimal("50.0")}
+    )
+    assert (
+        engine.evaluate(sig_below, base_context, base_policy).status == RiskDecisionStatus.APPROVED
+    )
 
     # Exactly maximum: risk=50 * 10 = 500
-    sig_at = base_signal.model_copy(update={"quantity": Decimal("10.0"), "stop_loss": Decimal("50.0")})
+    sig_at = base_signal.model_copy(
+        update={"quantity": Decimal("10.0"), "stop_loss": Decimal("50.0")}
+    )
     assert engine.evaluate(sig_at, base_context, base_policy).status == RiskDecisionStatus.APPROVED
 
     # Above maximum: risk=50 * 11 = 550
     policy = base_policy.model_copy(update={"max_order_quantity": Decimal("100.0")})
-    sig_above = base_signal.model_copy(update={"quantity": Decimal("11.0"), "stop_loss": Decimal("50.0")})
+    sig_above = base_signal.model_copy(
+        update={"quantity": Decimal("11.0"), "stop_loss": Decimal("50.0")}
+    )
     decision = engine.evaluate(sig_above, base_context, policy)
     assert decision.status == RiskDecisionStatus.REJECTED
     assert RiskRejectionCode.MAX_RISK_PER_TRADE_EXCEEDED in decision.rejection_codes
@@ -257,9 +292,7 @@ def test_daily_loss(
     assert RiskRejectionCode.DAILY_LOSS_LIMIT_BREACHED in dec_beyond.rejection_codes
 
 
-def test_drawdown(
-    base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
-) -> None:
+def test_drawdown(base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy) -> None:
     engine = RiskEngine()
 
     # Safe drawdown: peak=20k, current=19k -> 5% (limit 10%)
@@ -346,7 +379,7 @@ def test_architectural_no_execution_dependency() -> None:
 
     source = inspect.getsource(app.risk.engine)
     assert "broker" not in source.lower()
-    assert "execute" not in source.lower() # no execution
+    assert "execute" not in source.lower()  # no execution
     assert " import ai" not in source.lower()
 
 
@@ -362,6 +395,7 @@ def test_determinism_exposure_changes_identity(
 
     assert dec1.decision_id != dec2.decision_id
 
+
 def test_determinism_portfolio_equity_changes_identity(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
@@ -373,6 +407,7 @@ def test_determinism_portfolio_equity_changes_identity(
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
+
 
 def test_determinism_daily_pnl_changes_identity(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
@@ -386,6 +421,7 @@ def test_determinism_daily_pnl_changes_identity(
 
     assert dec1.decision_id != dec2.decision_id
 
+
 def test_determinism_position_changes_identity(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
@@ -397,6 +433,7 @@ def test_determinism_position_changes_identity(
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
+
 
 def test_determinism_policy_configuration_changes_identity(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
@@ -411,18 +448,23 @@ def test_determinism_policy_configuration_changes_identity(
 
     assert dec1.decision_id != dec2.decision_id
 
+
 def test_determinism_timestamp_changes_identity(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
     from datetime import timedelta
+
     engine = RiskEngine()
     ctx1 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at})
-    ctx2 = base_context.model_copy(update={"evaluated_at": base_context.evaluated_at + timedelta(seconds=1)})
+    ctx2 = base_context.model_copy(
+        update={"evaluated_at": base_context.evaluated_at + timedelta(seconds=1)}
+    )
 
     dec1 = engine.evaluate(base_signal, ctx1, base_policy)
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
+
 
 def test_determinism_none_versus_zero(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
@@ -436,6 +478,7 @@ def test_determinism_none_versus_zero(
     dec2 = engine.evaluate(sig2, base_context, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
+
 
 def test_determinism_string_delimiter_safety(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
@@ -453,6 +496,7 @@ def test_determinism_string_delimiter_safety(
 
     assert dec1.decision_id != dec2.decision_id
 
+
 def test_determinism_decimal_representation_safety(
     base_signal: Signal, base_context: RiskContext, base_policy: RiskPolicy
 ) -> None:
@@ -465,4 +509,3 @@ def test_determinism_decimal_representation_safety(
     dec2 = engine.evaluate(base_signal, ctx2, base_policy)
 
     assert dec1.decision_id != dec2.decision_id
-

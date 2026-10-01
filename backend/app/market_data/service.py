@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class MarketDataService(MarketDataProvider):
     """Application orchestration service for historical market data.
-    
+
     Provides data to Phase D by prioritizing the local immutable database cache.
     Fetches missing data from the vendor client safely.
     """
@@ -41,16 +41,21 @@ class MarketDataService(MarketDataProvider):
         for c in db_candles:
             if c.timestamp.tzinfo is None:
                 from datetime import UTC
+
                 c.timestamp = c.timestamp.replace(tzinfo=UTC)
 
             # Final structural chronology enforcement before yielding to Phase D
             if last_ts and c.timestamp <= last_ts:
-                raise ChronologyError(f"Chronology violation in DB cache for {symbol} {timeframe}: {c.timestamp} <= {last_ts}")
+                raise ChronologyError(
+                    f"Chronology violation in DB cache for {symbol} {timeframe}: {c.timestamp} <= {last_ts}"
+                )
 
             yield Candle.model_validate(c)
             last_ts = c.timestamp
 
-    async def _ensure_data_cached(self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime) -> None:
+    async def _ensure_data_cached(
+        self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime
+    ) -> None:
         """Fetch missing data from the vendor and cache it immutably."""
 
         # Use an async lock to prevent multiple concurrent requests for the exact same symbol/timeframe
@@ -61,25 +66,37 @@ class MarketDataService(MarketDataProvider):
 
         async with self._fetch_locks[lock_key]:
             # Deterministic coverage logic: Check if the exact requested range is already covered by a prior fetch
-            is_covered = await self.repository.is_range_covered(symbol, timeframe, start_time, end_time)
+            is_covered = await self.repository.is_range_covered(
+                symbol, timeframe, start_time, end_time
+            )
             if is_covered:
-                logger.info(f"Cache completely covers requested range for {symbol} between {start_time} and {end_time}. Skipping vendor.")
+                logger.info(
+                    f"Cache completely covers requested range for {symbol} between {start_time} and {end_time}. Skipping vendor."
+                )
                 return
 
             # Fetch from vendor
-            logger.info(f"Checking vendor data for {symbol} {timeframe} between {start_time} and {end_time}")
-            vendor_candles = await self.vendor_client.fetch_historical_candles(symbol, timeframe, start_time, end_time)
+            logger.info(
+                f"Checking vendor data for {symbol} {timeframe} between {start_time} and {end_time}"
+            )
+            vendor_candles = await self.vendor_client.fetch_historical_candles(
+                symbol, timeframe, start_time, end_time
+            )
 
             # We still query existing timestamps to enforce the Immutable Cache Contract (never overwrite)
             from datetime import UTC
-            raw_timestamps = await self.repository.get_existing_timestamps(symbol, timeframe, start_time, end_time)
+
+            raw_timestamps = await self.repository.get_existing_timestamps(
+                symbol, timeframe, start_time, end_time
+            )
             existing_timestamps = {
-                ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
-                for ts in raw_timestamps
+                ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts for ts in raw_timestamps
             }
 
             if not vendor_candles:
-                raise DataIntegrityError(f"Vendor provided insufficient/empty data to establish coverage for {symbol} between {start_time} and {end_time}")
+                raise DataIntegrityError(
+                    f"Vendor provided insufficient/empty data to establish coverage for {symbol} between {start_time} and {end_time}"
+                )
 
             # Filter and validate
             new_models = []
@@ -87,7 +104,9 @@ class MarketDataService(MarketDataProvider):
 
             for vc in vendor_candles:
                 if last_vendor_ts and vc.timestamp <= last_vendor_ts:
-                    raise ChronologyError(f"Vendor returned unordered data for {symbol}: {vc.timestamp} <= {last_vendor_ts}")
+                    raise ChronologyError(
+                        f"Vendor returned unordered data for {symbol}: {vc.timestamp} <= {last_vendor_ts}"
+                    )
                 last_vendor_ts = vc.timestamp
 
                 # Check range (vendor might over-return)
@@ -99,16 +118,18 @@ class MarketDataService(MarketDataProvider):
                     continue
 
                 # Convert to DB model
-                new_models.append(CandleModel(
-                    symbol=vc.symbol,
-                    timeframe=vc.timeframe,
-                    timestamp=vc.timestamp,
-                    open=vc.open,
-                    high=vc.high,
-                    low=vc.low,
-                    close=vc.close,
-                    volume=vc.volume,
-                ))
+                new_models.append(
+                    CandleModel(
+                        symbol=vc.symbol,
+                        timeframe=vc.timeframe,
+                        timestamp=vc.timestamp,
+                        open=vc.open,
+                        high=vc.high,
+                        low=vc.low,
+                        close=vc.close,
+                        volume=vc.volume,
+                    )
+                )
 
             if new_models:
                 logger.info(f"Persisting {len(new_models)} new candles for {symbol}")

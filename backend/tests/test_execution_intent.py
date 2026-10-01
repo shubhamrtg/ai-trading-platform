@@ -101,7 +101,9 @@ def test_adversarial_forged_decision_rejected(valid_signal: Signal) -> None:
         )
 
 
-def test_adversarial_clone_legitimate_decision_rejected(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+def test_adversarial_clone_legitimate_decision_rejected(
+    valid_signal: Signal, approved_decision: RiskDecision
+) -> None:
     # Clone the exact fields of a real approved decision
     cloned_decision = approved_decision.model_copy()
 
@@ -114,9 +116,13 @@ def test_adversarial_clone_legitimate_decision_rejected(valid_signal: Signal, ap
         )
 
 
-def test_adversarial_tampering_rejected(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+def test_adversarial_tampering_rejected(
+    valid_signal: Signal, approved_decision: RiskDecision
+) -> None:
     # Adversary tries to change the quantity after approval
-    tampered_decision = approved_decision.model_copy(update={"calculated_quantity": Decimal("100.0")})
+    tampered_decision = approved_decision.model_copy(
+        update={"calculated_quantity": Decimal("100.0")}
+    )
 
     # The new object identity is not registered.
     with pytest.raises(ValueError, match="RiskDecision lacks genuine execution provenance"):
@@ -129,6 +135,7 @@ def test_adversarial_tampering_rejected(valid_signal: Signal, approved_decision:
 
 def test_no_public_issuance_api() -> None:
     import app.execution._provenance as prov
+
     # Ensure no public registration API exists in the provenance module
     assert not hasattr(prov, "register")
     assert not hasattr(prov, "approve")
@@ -136,7 +143,6 @@ def test_no_public_issuance_api() -> None:
     assert not hasattr(prov, "claim")
     assert not hasattr(prov, "authorize")
     assert not hasattr(prov, "grant")
-
 
 
 def test_approved_decision_creates_intent(
@@ -251,7 +257,9 @@ def test_different_approved_decisions_produce_different_identities(
         trading_halted=False,
     )
 
-    signal2 = valid_signal.model_copy(update={"signal_id": uuid.uuid4(), "correlation_id": uuid.uuid4()})
+    signal2 = valid_signal.model_copy(
+        update={"signal_id": uuid.uuid4(), "correlation_id": uuid.uuid4()}
+    )
     decision2 = engine.evaluate(signal2, context, policy)
     assert decision2.status == RiskDecisionStatus.APPROVED
 
@@ -346,6 +354,7 @@ def test_stop_limit_order_fails_closed(
     ):
         build_order_intent(sig, approved_decision, "acc-1")
 
+
 def test_object_id_reuse_protection(valid_signal: Signal, approved_decision: RiskDecision) -> None:
     import app.execution._provenance as prov
 
@@ -354,6 +363,7 @@ def test_object_id_reuse_protection(valid_signal: Signal, approved_decision: Ris
 
     class Dummy:
         pass
+
     dummy = Dummy()
 
     # Force the registry to associate the integer ID of unapproved_decision with a DIFFERENT object reference
@@ -362,12 +372,14 @@ def test_object_id_reuse_protection(valid_signal: Signal, approved_decision: Ris
 
     # Now prov._registry has id(unapproved_decision) as a key, but the reference points to dummy.
     # The id(...) in registry check would pass, but
-#
+    #
     with pytest.raises(ValueError, match="RiskDecision lacks genuine execution provenance"):
         build_order_intent(valid_signal, unapproved_decision, "acc-1")
 
 
-def test_legitimate_decision_remains_valid_after_many_approvals(valid_signal: Signal, approved_decision: RiskDecision) -> None:
+def test_legitimate_decision_remains_valid_after_many_approvals(
+    valid_signal: Signal, approved_decision: RiskDecision
+) -> None:
     import app.execution._provenance as prov
 
     # approved_decision is registered.

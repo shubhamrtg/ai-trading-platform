@@ -89,7 +89,9 @@ class RiskPolicy(BaseModel):
     max_daily_loss: Decimal = Field(..., ge=0)
     max_drawdown_percent: Decimal = Field(..., ge=0, le=1.0)
     trading_halted: bool = Field(default=False)
-    transaction_cost_allowance: Decimal = Field(default=Decimal("0.0"), ge=0, description="Allowance for transaction costs/slippage")
+    transaction_cost_allowance: Decimal = Field(
+        default=Decimal("0.0"), ge=0, description="Allowance for transaction costs/slippage"
+    )
 
 
 class RiskContext(BaseModel):

@@ -9,9 +9,10 @@ from app.models.base import Base
 
 class CandleModel(Base):
     """Database model for persisted historical candles.
-    
+
     Serves as the immutable cache for historical market data.
     """
+
     __tablename__ = "market_data_candles"
 
     # Autoincrementing PK
@@ -31,8 +32,9 @@ class CandleModel(Base):
         UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_candle_identity"),
     )
 
+
 class MarketDataCoverageModel(Base):
-    __tablename__ = 'market_data_coverage'
+    __tablename__ = "market_data_coverage"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String, nullable=False, index=True)
     timeframe: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -40,4 +42,3 @@ class MarketDataCoverageModel(Base):
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     actual_count: Mapped[int] = mapped_column(Integer, nullable=False)
     timestamp_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
-

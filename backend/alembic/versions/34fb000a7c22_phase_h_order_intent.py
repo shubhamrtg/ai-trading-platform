@@ -4,24 +4,25 @@ Revision ID: 34fb000a7c22
 Revises: d57668702d42
 Create Date: 2026-09-18 11:21:44.403732
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '34fb000a7c22'
-down_revision: str | None = 'd57668702d42'
+revision: str = "34fb000a7c22"
+down_revision: str | None = "d57668702d42"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     # 1. Add columns as nullable first
-    op.add_column('risk_decisions', sa.Column('trading_mode', sa.String(), nullable=True))
-    op.add_column('risk_decisions', sa.Column('risk_policy_version', sa.String(), nullable=True))
-    op.add_column('signals', sa.Column('order_type', sa.String(), nullable=True))
-    op.add_column('signals', sa.Column('quantity', sa.Numeric(24, 8), nullable=True))
+    op.add_column("risk_decisions", sa.Column("trading_mode", sa.String(), nullable=True))
+    op.add_column("risk_decisions", sa.Column("risk_policy_version", sa.String(), nullable=True))
+    op.add_column("signals", sa.Column("order_type", sa.String(), nullable=True))
+    op.add_column("signals", sa.Column("quantity", sa.Numeric(24, 8), nullable=True))
 
     # 2. Backfill Data
     bind = op.get_bind()
@@ -88,7 +89,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column('signals', 'quantity')
-    op.drop_column('signals', 'order_type')
-    op.drop_column('risk_decisions', 'risk_policy_version')
-    op.drop_column('risk_decisions', 'trading_mode')
+    op.drop_column("signals", "quantity")
+    op.drop_column("signals", "order_type")
+    op.drop_column("risk_decisions", "risk_policy_version")
+    op.drop_column("risk_decisions", "trading_mode")

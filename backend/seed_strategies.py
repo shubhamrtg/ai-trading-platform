@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Ensure the moving average crossover is registered
 
+
 async def main():
     settings = get_settings()
     engine = setup_database(settings.database_url)
@@ -25,7 +26,10 @@ async def main():
     async with AsyncSession(engine) as session:
         # Loop through all strategies in the registry and sync them
         count = 0
-        for (strategy_id, version), (strat_class, source_hash) in StrategyRegistry._strategies.items():
+        for (strategy_id, version), (
+            strat_class,
+            source_hash,
+        ) in StrategyRegistry._strategies.items():
             meta = strat_class.metadata
             print(f"Syncing {strategy_id} v{version} (Hash: {source_hash[:8]}...)")
 
@@ -42,7 +46,7 @@ async def main():
                     author="System",
                     status="ACTIVE",
                     created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC)
+                    updated_at=datetime.now(UTC),
                 )
                 session.add(strat)
                 await session.flush()
@@ -52,7 +56,7 @@ async def main():
             # Ensure Version exists
             stmt_v = select(StrategyVersionModel).where(
                 StrategyVersionModel.strategy_id == strategy_id,
-                StrategyVersionModel.version == version
+                StrategyVersionModel.version == version,
             )
             res_v = await session.execute(stmt_v)
             strat_v = res_v.scalar_one_or_none()
@@ -66,9 +70,11 @@ async def main():
                     supported_asset_classes=list(meta.supported_asset_classes),
                     supported_timeframes=list(meta.supported_timeframes),
                     required_indicators=list(meta.required_indicators),
-                    parameters_schema=strat_class.parameters_schema.model_json_schema() if strat_class.parameters_schema else {},
+                    parameters_schema=strat_class.parameters_schema.model_json_schema()
+                    if strat_class.parameters_schema
+                    else {},
                     created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC)
+                    updated_at=datetime.now(UTC),
                 )
                 session.add(strat_v)
                 count += 1
@@ -79,6 +85,7 @@ async def main():
         print(f"Successfully synced {count} new strategy versions to the database.")
 
     await engine.dispose()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

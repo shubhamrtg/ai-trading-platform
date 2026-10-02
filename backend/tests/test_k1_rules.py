@@ -163,105 +163,139 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
 
 
 @pytest.mark.asyncio
-async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
-    import tempfile
+async def test_cash_concurrency_a_b():
     import uuid
     from decimal import Decimal
 
+    from app.config.settings import Settings
+    from app.models.base import Base
     from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
     from app.models.paper import CashReservationModel, PaperSessionModel, PaperSessionState
+    from app.models.portfolio import PortfolioSnapshotModel
     from app.models.trading import SignalModel
     from app.paper.orchestrator import PaperOrchestrator
     from app.schemas.risk import RiskDecision
     from app.schemas.signal import Signal
-    from sqlalchemy import select, text
+    from sqlalchemy import func, select, text
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.pool import NullPool
 
     from tests.test_k1_rules import MockAdapter
 
-    db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-    os.close(db_fd)
-    shared_url = f"sqlite+aiosqlite:///{db_path}"
-    # timeout=15 allows concurrent writers to wait instead of immediately throwing OperationalError
-    engine1 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
-    engine2 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
+    # Use PostgreSQL for genuine row-lock concurrency proof.
+    # Fallback to the application default if no explicit test URL provided.
+    default_pg_url = Settings.model_fields["database_url"].default
+    pg_url = os.environ.get("POSTGRES_TEST_URL", default_pg_url)
 
-    from sqlalchemy import event
+    # Create isolated schema safely without dropping application tables
+    admin_engine = create_async_engine(pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    schema_name = f"test_k1_{uuid.uuid4().hex}"
+    async with admin_engine.connect() as conn:
+        await conn.execute(text(f"CREATE SCHEMA {schema_name}"))
+    await admin_engine.dispose()
 
-    @event.listens_for(engine1.sync_engine, "connect")
-    def do_connect1(dbapi_connection, connection_record):
-        dbapi_connection.isolation_level = None
+    try:
+        # Use the isolated schema for all test connections
+        connect_args = {"server_settings": {"search_path": schema_name}}
+        engine1 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
+        engine2 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
+        engine3 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
 
-    @event.listens_for(engine1.sync_engine, "begin")
-    def do_begin1(conn):
-        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        async with engine1.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-    @event.listens_for(engine2.sync_engine, "connect")
-    def do_connect2(dbapi_connection, connection_record):
-        dbapi_connection.isolation_level = None
+        account_id = f"test-account-{uuid.uuid4()}"
+        worker_a_id = uuid.uuid4()
+        worker_b_id = uuid.uuid4()
+        session_id = uuid.uuid4()
 
-    @event.listens_for(engine2.sync_engine, "begin")
-    def do_begin2(conn):
-        conn.exec_driver_sql("BEGIN IMMEDIATE")
-
-    keepalive_conn = await engine1.connect()
-    from app.models.base import Base
-
-    await keepalive_conn.run_sync(Base.metadata.create_all)
-    await keepalive_conn.execute(text("PRAGMA foreign_keys = ON"))
-    await keepalive_conn.execute(text("PRAGMA journal_mode = WAL"))  # Helps with concurrency
-    await keepalive_conn.commit()
-
-    session_id, worker_id, account_id = setup_session
-
-    async with AsyncSession(engine1) as init_db:
-        from app.models.portfolio import PortfolioSnapshotModel
-
-        init_db.add(
-            PortfolioSnapshotModel(
-                snapshot_id=uuid.uuid4(),
-                account_id=account_id,
-                timestamp=_now(),
-                cash=Decimal("10000.0"),
-                available_cash=Decimal("10000.0"),
-                equity=Decimal("10000.0"),
+        async with AsyncSession(engine1) as init_db:
+            init_db.add(
+                PortfolioSnapshotModel(
+                    snapshot_id=uuid.uuid4(),
+                    account_id=account_id,
+                    timestamp=_now(),
+                    cash=Decimal("10000.0"),
+                    available_cash=Decimal("10000.0"),
+                    equity=Decimal("10000.0"),
+                    total_realized_pnl=Decimal("0.0"),
+                    total_unrealized_pnl=Decimal("0.0"),
+                    total_exposure=Decimal("0.0"),
+                    reserved_capital=Decimal("0.0"),
+                )
             )
-        )
-        s1 = PaperSessionModel(
-            session_id=session_id,
-            account_id=account_id,
-            strategy_id="test1",
-            strategy_version="1.0",
-            symbol="BTC-USD",
-            timeframe="1h",
-            state=PaperSessionState.RUNNING,
-            worker_owner_id=worker_id,
-            worker_heartbeat=_now(),
-        )
-        init_db.add(s1)
+            session_id_a = session_id
+            session_id_b = uuid.uuid4()
+            init_db.add(
+                PaperSessionModel(
+                    session_id=session_id_a,
+                    account_id=account_id,
+                    strategy_id="test",
+                    strategy_version="1.0",
+                    symbol="BTC-USD",
+                    timeframe="1h",
+                    state=PaperSessionState.RUNNING,
+                    worker_owner_id=worker_a_id,
+                    worker_heartbeat=_now(),
+                    created_at=_now(),
+                )
+            )
+            init_db.add(
+                PaperSessionModel(
+                    session_id=session_id_b,
+                    account_id=account_id,
+                    strategy_id="test",
+                    strategy_version="1.0",
+                    symbol="BTC-USD",
+                    timeframe="1h",
+                    state=PaperSessionState.RUNNING,
+                    worker_owner_id=worker_b_id,
+                    worker_heartbeat=_now(),
+                    created_at=_now(),
+                )
+            )
+            await init_db.commit()
 
-        session_id_2 = uuid.uuid4()
-        worker_id_2 = uuid.uuid4()
-        s2 = PaperSessionModel(
-            session_id=session_id_2,
-            account_id=account_id,
-            strategy_id="test2",
-            strategy_version="1.0",
-            symbol="BTC-USD",
-            timeframe="1h",
-            state=PaperSessionState.RUNNING,
-            worker_owner_id=worker_id_2,
-            worker_heartbeat=_now(),
-        )
-        init_db.add(s2)
-        await init_db.commit()
+        # Shared events to coordinate A and B deterministically
+        a_lock_acquired = asyncio.Event()
+        a_can_complete = asyncio.Event()
+        b_lock_attempted = asyncio.Event()
 
-    async with AsyncSession(engine1) as db1, AsyncSession(engine2) as db2:
-        o1 = PaperOrchestrator(db1, MockAdapter())
-        o2 = PaperOrchestrator(db2, MockAdapter())
+        session_a = AsyncSession(engine1)
+        session_b = AsyncSession(engine2)
 
-        sig1 = Signal(
+        orig_execute_a = session_a.execute
+        orig_execute_b = session_b.execute
+        import types
+
+        async def wrapped_execute_a(self_obj, *args, **kwargs):
+            stmt = args[0]
+            res = await orig_execute_a(*args, **kwargs)
+            if "FOR UPDATE" in str(stmt).upper() and "portfolio_snapshots" in str(stmt).lower():
+                a_lock_acquired.set()
+                await a_can_complete.wait()
+            return res
+
+        async def wrapped_execute_b(self_obj, *args, **kwargs):
+            stmt = args[0]
+            if "FOR UPDATE" in str(stmt).upper() and "portfolio_snapshots" in str(stmt).lower():
+                b_lock_attempted.set()
+            res = await orig_execute_b(*args, **kwargs)
+            return res
+
+        session_a.execute = types.MethodType(wrapped_execute_a, session_a)
+        session_b.execute = types.MethodType(wrapped_execute_b, session_b)
+
+        orchestrator_a = PaperOrchestrator(session_a, MockAdapter())
+
+        async def mock_check(*args):
+            return True
+
+        orchestrator_a.check_lease = mock_check
+        orchestrator_b = PaperOrchestrator(session_b, MockAdapter())
+        orchestrator_b.check_lease = mock_check
+
+        sig_a = Signal(
             signal_id=uuid.uuid4(),
             correlation_id=uuid.uuid4(),
             strategy_id="test",
@@ -275,12 +309,22 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             quantity=Decimal("60.0"),
             metadata={"time_in_force": "GTC"},
         )
-        db1.add(SignalModel(**sig1.model_dump(mode="python")))
+        rd_a = RiskDecision(
+            decision_id=uuid.uuid4(),
+            correlation_id=sig_a.correlation_id,
+            signal_id=sig_a.signal_id,
+            status=RiskDecisionStatus.APPROVED,
+            trading_mode="PAPER",
+            calculated_quantity=Decimal("60.0"),
+            authorized_cash_requirement=Decimal("6000.0"),
+            risk_policy_version="1.0",
+            timestamp=_now(),
+        )
 
-        sig2 = Signal(
+        sig_b = Signal(
             signal_id=uuid.uuid4(),
             correlation_id=uuid.uuid4(),
-            strategy_id="test2",
+            strategy_id="test",
             strategy_version="1.0",
             symbol="BTC-USD",
             timestamp=_now(),
@@ -291,26 +335,10 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             quantity=Decimal("60.0"),
             metadata={"time_in_force": "GTC"},
         )
-        db2.add(SignalModel(**sig2.model_dump(mode="python")))
-
-        await db1.commit()
-        await db2.commit()
-
-        rd1 = RiskDecision(
+        rd_b = RiskDecision(
             decision_id=uuid.uuid4(),
-            correlation_id=sig1.correlation_id,
-            signal_id=sig1.signal_id,
-            status=RiskDecisionStatus.APPROVED,
-            trading_mode="PAPER",
-            calculated_quantity=Decimal("60.0"),
-            authorized_cash_requirement=Decimal("6000.0"),
-            risk_policy_version="1.0",
-            timestamp=_now(),
-        )
-        rd2 = RiskDecision(
-            decision_id=uuid.uuid4(),
-            correlation_id=sig2.correlation_id,
-            signal_id=sig2.signal_id,
+            correlation_id=sig_b.correlation_id,
+            signal_id=sig_b.signal_id,
             status=RiskDecisionStatus.APPROVED,
             trading_mode="PAPER",
             calculated_quantity=Decimal("60.0"),
@@ -319,43 +347,60 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
             timestamp=_now(),
         )
 
-        # Do NOT catch ApplicationFailureError, let it fail the test if it happens
+        async with AsyncSession(engine1) as sig_db:
+            sig_db.add(SignalModel(**sig_a.model_dump(mode="python")))
+            sig_db.add(SignalModel(**sig_b.model_dump(mode="python")))
+            await sig_db.commit()
 
-        # Use an Event to coordinate genuine concurrent start without artificial sleep.
-        start_event = asyncio.Event()
-
-        async def worker_1():
-            await start_event.wait()
-            return await o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
-
-        async def worker_2():
-            await start_event.wait()
-            return await o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2)
-
-        task1 = asyncio.create_task(worker_1())
-        task2 = asyncio.create_task(worker_2())
-
-        # Fire both simultaneously
-        start_event.set()
-
-        results = await asyncio.gather(task1, task2)
-
-        # Exactly one True, exactly one False
-        assert (results[0] is True and results[1] is False) or (
-            results[1] is True and results[0] is False
+        # Start Worker A
+        task_a = asyncio.create_task(
+            orchestrator_a.transaction_b_reserve_cash(session_id_a, worker_a_id, sig_a, rd_a)
         )
 
-        # Verify total reservations
-        from sqlalchemy import func
+        # Wait for A to acquire the row lock
+        await a_lock_acquired.wait()
 
-        res_sum = await db1.execute(
-            select(func.sum(CashReservationModel.authorized_cash_requirement)).where(
-                CashReservationModel.active.is_(True)
+        # Start Worker B
+        task_b = asyncio.create_task(
+            orchestrator_b.transaction_b_reserve_cash(session_id_b, worker_b_id, sig_b, rd_b)
+        )
+
+        # Deterministically wait until B attempts to acquire the exact same lock
+        await b_lock_attempted.wait()
+
+        # Release A to complete its transaction
+        a_can_complete.set()
+
+        res_a, res_b = await asyncio.gather(task_a, task_b)
+
+        await session_a.close()
+        await session_b.close()
+
+        # Verify exact outcomes: One success, one legitimate business rejection (not an exception)
+        assert (res_a is True and res_b is False) or (res_a is False and res_b is True)
+
+        async with AsyncSession(engine3) as verify_db:
+            res_sum = await verify_db.execute(
+                select(func.sum(CashReservationModel.authorized_cash_requirement)).where(
+                    CashReservationModel.active.is_(True),
+                    CashReservationModel.session_id.in_([session_id_a, session_id_b]),
+                )
             )
+            total_req = res_sum.scalar() or Decimal("0.0")
+            assert total_req == Decimal("6000.0"), "Only one transaction should have reserved cash"
+
+    finally:
+        # Cleanup schema safely in all paths (success, failure, or exception)
+        await engine1.dispose()
+        await engine2.dispose()
+        await engine3.dispose()
+
+        admin_engine_cleanup = create_async_engine(
+            pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
         )
-        active_reserved_cash = res_sum.scalar() or Decimal("0.0")
-        assert active_reserved_cash == Decimal("6000.0")
-        assert active_reserved_cash <= Decimal("10000.0")
+        async with admin_engine_cleanup.connect() as conn:
+            await conn.execute(text(f"DROP SCHEMA {schema_name} CASCADE"))
+        await admin_engine_cleanup.dispose()
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,6 @@ def setup_base_db():
 
 
 def test_migration_empty_database(setup_base_db):
-    db_path = setup_base_db
     run_alembic(command.upgrade, "head")
     run_alembic(command.downgrade, "base")
 
@@ -94,7 +93,6 @@ def test_migration_representative_database(setup_base_db):
 
 
 def test_migration_partially_populated_order(setup_base_db):
-    db_path = setup_base_db
 
     # We simulate mid-migration behavior by upgrading manually,
     # inserting a row with some nulls, and then checking it fixes them.

@@ -95,7 +95,7 @@ async def test_order_semantics_preserved(db_session: AsyncSession, mock_adapter,
         order_type=OrderType.LIMIT,
         signal_type="ENTRY",
         quantity=Decimal("1.5"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
 
     rd = RiskDecision(
@@ -152,7 +152,7 @@ async def test_cash_authorization(db_session: AsyncSession, mock_adapter, setup_
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
     db_session.add(SignalModel(**signal.model_dump(mode="python")))
     await db_session.commit()
@@ -239,7 +239,7 @@ async def test_quote_authorization(db_session: AsyncSession, mock_adapter, setup
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("100.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
 
     rd = RiskDecision(
@@ -297,7 +297,7 @@ async def test_economic_commit_and_fees(db_session: AsyncSession, mock_adapter, 
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("100.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
 
     rd = RiskDecision(
@@ -402,7 +402,7 @@ async def test_kill_switch_race(db_session: AsyncSession, mock_adapter, setup_se
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
 
     rd = RiskDecision(
@@ -478,7 +478,7 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
 
     runner = MagicMock()

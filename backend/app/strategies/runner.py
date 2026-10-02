@@ -186,7 +186,11 @@ class StrategyRunner:
                 take_profit=draft.take_profit,
                 confidence=draft.confidence,
                 rationale=draft.rationale,
-                metadata={"source": "StrategyRunner", **self.parameters.model_dump(mode="json")},
+                metadata={
+                    "source": "StrategyRunner",
+                    "time_in_force": "GTC",
+                    **self.parameters.model_dump(mode="json"),
+                },
             )
 
         except StrategyValidationError:

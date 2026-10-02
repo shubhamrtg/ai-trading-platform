@@ -6,7 +6,7 @@ Strategies must be deterministic, isolated from execution, and yield Signals.
 
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -111,7 +111,7 @@ class StrategyParameters(BaseModel):
 TParams = TypeVar("TParams", bound=StrategyParameters)
 
 
-class Strategy(ABC, Generic[TParams]):
+class Strategy[TParams: StrategyParameters](ABC):
     """Base Strategy class.
 
     A strategy must:

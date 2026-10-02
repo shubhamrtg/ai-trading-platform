@@ -32,20 +32,20 @@ def upgrade() -> None:
     bind.execute(
         sa.text(
             """
-            UPDATE signals 
+            UPDATE signals
             SET order_type = (
                 SELECT MIN(order_intents.order_type)
-                FROM order_intents 
-                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id 
+                FROM order_intents
+                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id
                 WHERE risk_decisions.signal_id = signals.signal_id
                 GROUP BY risk_decisions.signal_id
                 HAVING COUNT(DISTINCT order_intents.order_type) = 1
             )
             WHERE order_type IS NULL
             AND EXISTS (
-                SELECT 1 
-                FROM order_intents 
-                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id 
+                SELECT 1
+                FROM order_intents
+                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id
                 WHERE risk_decisions.signal_id = signals.signal_id
                 GROUP BY risk_decisions.signal_id
                 HAVING COUNT(DISTINCT order_intents.order_type) = 1
@@ -59,11 +59,11 @@ def upgrade() -> None:
     bind.execute(
         sa.text(
             """
-            UPDATE signals 
+            UPDATE signals
             SET quantity = (
                 SELECT MIN(order_intents.quantity)
-                FROM order_intents 
-                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id 
+                FROM order_intents
+                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id
                 WHERE risk_decisions.signal_id = signals.signal_id
                 GROUP BY risk_decisions.signal_id
                 HAVING COUNT(DISTINCT order_intents.quantity) = 1
@@ -71,9 +71,9 @@ def upgrade() -> None:
             )
             WHERE quantity IS NULL
             AND EXISTS (
-                SELECT 1 
-                FROM order_intents 
-                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id 
+                SELECT 1
+                FROM order_intents
+                JOIN risk_decisions ON risk_decisions.decision_id = order_intents.risk_decision_id
                 WHERE risk_decisions.signal_id = signals.signal_id
                 GROUP BY risk_decisions.signal_id
                 HAVING COUNT(DISTINCT order_intents.quantity) = 1

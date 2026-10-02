@@ -1,4 +1,5 @@
 import asyncio
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -163,6 +164,7 @@ async def test_k1_orchestration_e2e(db_session: AsyncSession, mock_adapter, setu
 
 @pytest.mark.asyncio
 async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
+    import tempfile
     import uuid
     from decimal import Decimal
 
@@ -178,10 +180,30 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
 
     from tests.test_k1_rules import MockAdapter
 
-    shared_url = "sqlite+aiosqlite:///file:testdb_cash_conc_new?mode=memory&cache=shared&uri=true"
+    db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+    os.close(db_fd)
+    shared_url = f"sqlite+aiosqlite:///{db_path}"
     # timeout=15 allows concurrent writers to wait instead of immediately throwing OperationalError
     engine1 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
     engine2 = create_async_engine(shared_url, poolclass=NullPool, connect_args={"timeout": 15})
+
+    from sqlalchemy import event
+
+    @event.listens_for(engine1.sync_engine, "connect")
+    def do_connect1(dbapi_connection, connection_record):
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine1.sync_engine, "begin")
+    def do_begin1(conn):
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+    @event.listens_for(engine2.sync_engine, "connect")
+    def do_connect2(dbapi_connection, connection_record):
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine2.sync_engine, "begin")
+    def do_begin2(conn):
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
 
     keepalive_conn = await engine1.connect()
     from app.models.base import Base
@@ -299,14 +321,24 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
 
         # Do NOT catch ApplicationFailureError, let it fail the test if it happens
 
-        async def delayed_call():
-            await asyncio.sleep(0.05)
+        # Use an Event to coordinate genuine concurrent start without artificial sleep.
+        start_event = asyncio.Event()
+
+        async def worker_1():
+            await start_event.wait()
+            return await o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
+
+        async def worker_2():
+            await start_event.wait()
             return await o2.transaction_b_reserve_cash(session_id_2, worker_id_2, sig2, rd2)
 
-        results = await asyncio.gather(
-            o1.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1),
-            delayed_call(),
-        )
+        task1 = asyncio.create_task(worker_1())
+        task2 = asyncio.create_task(worker_2())
+
+        # Fire both simultaneously
+        start_event.set()
+
+        results = await asyncio.gather(task1, task2)
 
         # Exactly one True, exactly one False
         assert (results[0] is True and results[1] is False) or (
@@ -318,7 +350,7 @@ async def test_cash_concurrency_a_b(db_session: AsyncSession, setup_session):
 
         res_sum = await db1.execute(
             select(func.sum(CashReservationModel.authorized_cash_requirement)).where(
-                CashReservationModel.active == True
+                CashReservationModel.active.is_(True)
             )
         )
         active_reserved_cash = res_sum.scalar() or Decimal("0.0")
@@ -408,25 +440,15 @@ async def test_cash_reservation_boundary(db_session: AsyncSession, setup_session
     success1 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
     assert success1 is True
 
-    # Clean up using exact identities!
-    await db_session.execute(
-        delete(OrderModel).where(OrderModel.correlation_id == sig1.correlation_id)
-    )
-    await db_session.execute(
-        delete(CashReservationModel).where(
-            CashReservationModel.authorized_cash_requirement == Decimal("3000.0")
-        )
-    )  # wait, this deletes by value.
-    # To delete by id we need the order intent id, let's just rollback or just delete using IDs carefully.
-    # Actually, we can just use sig2 with a DIFFERENT timeframe/etc so we can just test the next failure WITHOUT cleaning up, wait! If we don't clean up, cash is 10k reserved, so the next 3000.01 will fail anyway! But the prompt says 7000 + 3000.01 must be tested.
-    # We can just rollback the whole session! But db_session.commit() was called.
-    # So let's delete exactly by finding the intent_id first.
     from sqlalchemy import select
 
     intent_record = await db_session.execute(
         select(OrderIntentModel).where(OrderIntentModel.correlation_id == sig1.correlation_id)
     )
     intent_id = intent_record.scalar_one().intent_id
+    await db_session.execute(
+        delete(OrderModel).where(OrderModel.correlation_id == sig1.correlation_id)
+    )
     await db_session.execute(
         delete(CashReservationModel).where(CashReservationModel.order_intent_id == intent_id)
     )
@@ -511,7 +533,7 @@ async def test_risk_decision_gate(db_session: AsyncSession, setup_session):
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("1.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
     rd = RiskDecision(
         decision_id=uuid.uuid4(),
@@ -581,7 +603,7 @@ async def test_buy_sell_accounting(db_session: AsyncSession, setup_session):
         order_type=OrderType.MARKET,
         signal_type="ENTRY",
         quantity=Decimal("10.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
     rd1 = RiskDecision(
         decision_id=uuid.uuid4(),
@@ -626,7 +648,7 @@ async def test_buy_sell_accounting(db_session: AsyncSession, setup_session):
         order_type=OrderType.MARKET,
         signal_type="EXIT",
         quantity=Decimal("5.0"),
-        metadata={"source": "test"},
+        metadata={"source": "test", "time_in_force": "GTC"},
     )
     rd2 = RiskDecision(
         decision_id=uuid.uuid4(),
@@ -1021,3 +1043,136 @@ async def test_transaction_d_idempotency(db_session: AsyncSession, setup_session
     assert order.state == OrderState.FILLED
     assert order.filled_quantity == order_filled_quantity_1
     assert order.average_fill_price == order_average_fill_price_1
+
+
+@pytest.mark.asyncio
+async def test_time_in_force_semantics(db_session: AsyncSession, setup_session):
+    import uuid
+    from decimal import Decimal
+
+    from app.models.enums import OrderSide, OrderType, RiskDecisionStatus
+    from app.models.trading import OrderIntentModel, OrderModel, SignalModel
+    from app.paper.orchestrator import PaperOrchestrator
+    from app.schemas.risk import RiskDecision
+    from app.schemas.signal import Signal
+    from sqlalchemy import select
+
+    from tests.test_k1_rules import MockAdapter
+
+    session_id, worker_id, account_id = setup_session
+    orchestrator = PaperOrchestrator(db_session, MockAdapter())
+
+    # 1. Missing time_in_force -> rejected
+    sig1 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("1.0"),
+        metadata={},
+    )
+    rd1 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig1.correlation_id,
+        signal_id=sig1.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("1.0"),
+        authorized_cash_requirement=Decimal("100.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig1.model_dump(mode="python")))
+    await db_session.commit()
+
+    import pytest
+    from app.models.base import ApplicationFailureError
+
+    with pytest.raises(ApplicationFailureError, match="(?i)(time_in_force|TimeInForce)"):
+        await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig1, rd1)
+
+    # Verify no artifacts
+    intent = await db_session.execute(
+        select(OrderIntentModel).where(OrderIntentModel.correlation_id == sig1.correlation_id)
+    )
+    assert intent.scalar_one_or_none() is None
+
+    order = await db_session.execute(
+        select(OrderModel).where(OrderModel.correlation_id == sig1.correlation_id)
+    )
+    assert order.scalar_one_or_none() is None
+
+    # 2. Unsupported time_in_force -> rejected
+    sig2 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("1.0"),
+        metadata={"time_in_force": "IOC"},
+    )
+    rd2 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig2.correlation_id,
+        signal_id=sig2.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("1.0"),
+        authorized_cash_requirement=Decimal("100.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig2.model_dump(mode="python")))
+    await db_session.commit()
+
+    with pytest.raises(ApplicationFailureError, match="(?i)(time_in_force|TimeInForce)"):
+        await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig2, rd2)
+
+    intent2 = await db_session.execute(
+        select(OrderIntentModel).where(OrderIntentModel.correlation_id == sig2.correlation_id)
+    )
+    assert intent2.scalar_one_or_none() is None
+
+    # 3. Explicit GTC -> succeeds
+    sig3 = Signal(
+        signal_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        strategy_id="test",
+        strategy_version="1.0",
+        symbol="BTC-USD",
+        timestamp=_now(),
+        timeframe="1h",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        signal_type="ENTRY",
+        quantity=Decimal("1.0"),
+        metadata={"time_in_force": "GTC"},
+    )
+    rd3 = RiskDecision(
+        decision_id=uuid.uuid4(),
+        correlation_id=sig3.correlation_id,
+        signal_id=sig3.signal_id,
+        status=RiskDecisionStatus.APPROVED,
+        trading_mode="PAPER",
+        calculated_quantity=Decimal("1.0"),
+        authorized_cash_requirement=Decimal("100.0"),
+        risk_policy_version="1.0",
+        timestamp=_now(),
+    )
+    db_session.add(SignalModel(**sig3.model_dump(mode="python")))
+    await db_session.commit()
+
+    res3 = await orchestrator.transaction_b_reserve_cash(session_id, worker_id, sig3, rd3)
+    assert res3 is True

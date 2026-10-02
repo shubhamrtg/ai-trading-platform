@@ -49,10 +49,7 @@ class PaperOrchestrator:
         heartbeat = session.worker_heartbeat
         if heartbeat.tzinfo is None:
             heartbeat = heartbeat.replace(tzinfo=UTC)
-        if (self._now() - heartbeat).total_seconds() > self.LEASE_DURATION_SECONDS:
-            return False
-
-        return True
+        return not (self._now() - heartbeat).total_seconds() > self.LEASE_DURATION_SECONDS
 
     async def acquire_lease(self, session_id: uuid.UUID, worker_id: uuid.UUID) -> bool:
         """Acquire or reclaim a worker lease."""
@@ -183,7 +180,7 @@ class PaperOrchestrator:
                 sum_res = await self.db.execute(
                     select(func.sum(CashReservationModel.authorized_cash_requirement))
                     .where(CashReservationModel.session_id.in_(account_session_ids))
-                    .where(CashReservationModel.active == True)
+                    .where(CashReservationModel.active)
                 )
                 val = sum_res.scalar()
                 if val is not None:
@@ -220,7 +217,10 @@ class PaperOrchestrator:
 
             # Ensure order semantics come from the originating Signal
             intent_id = uuid.uuid4()
-            time_in_force_value = signal.metadata.get("time_in_force", "GTC")
+            if "time_in_force" not in signal.metadata:
+                raise ValueError("time_in_force is missing in signal metadata")
+
+            time_in_force_value = signal.metadata["time_in_force"]
             if time_in_force_value != "GTC":
                 raise ValueError(
                     f"K1 currently only supports GTC TimeInForce. Received: {time_in_force_value}"
@@ -551,7 +551,7 @@ class PaperOrchestrator:
             active_res = await self.db.execute(
                 select(func.sum(CashReservationModel.authorized_cash_requirement))
                 .where(CashReservationModel.session_id.in_(account_session_ids))
-                .where(CashReservationModel.active == True)
+                .where(CashReservationModel.active)
             )
             remaining_reserved_cash = active_res.scalar() or Decimal("0.0")
         else:

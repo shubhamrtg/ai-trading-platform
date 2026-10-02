@@ -194,14 +194,33 @@ async def test_cash_concurrency_a_b():
         await conn.execute(text(f"CREATE SCHEMA {schema_name}"))
     await admin_engine.dispose()
 
+    a_lock_acquired = None
+    a_can_complete = None
+    engine1 = None
+    engine2 = None
+    engine3 = None
+    session_a = None
+    session_b = None
+    task_a = None
+    task_b = None
+
     try:
         # Use the isolated schema for all test connections
         app_name_a = f"k1_worker_a_{uuid.uuid4().hex}"
         app_name_b = f"k1_worker_b_{uuid.uuid4().hex}"
-        connect_args_a = {"server_settings": {"search_path": schema_name, "application_name": app_name_a}}
-        connect_args_b = {"server_settings": {"search_path": schema_name, "application_name": app_name_b}}
-        connect_args_verify = {"server_settings": {"search_path": schema_name, "application_name": f"k1_verify_{uuid.uuid4().hex}"}}
-        
+        connect_args_a = {
+            "server_settings": {"search_path": schema_name, "application_name": app_name_a}
+        }
+        connect_args_b = {
+            "server_settings": {"search_path": schema_name, "application_name": app_name_b}
+        }
+        connect_args_verify = {
+            "server_settings": {
+                "search_path": schema_name,
+                "application_name": f"k1_verify_{uuid.uuid4().hex}"
+            }
+        }
+
         engine1 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_a)
         engine2 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_b)
         engine3 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_verify)
@@ -352,7 +371,7 @@ async def test_cash_concurrency_a_b():
         )
 
         # Wait for A to acquire the row lock
-        await a_lock_acquired.wait()
+        await asyncio.wait_for(a_lock_acquired.wait(), timeout=5.0)
 
         # Start Worker B
         task_b = asyncio.create_task(
@@ -364,28 +383,27 @@ async def test_cash_concurrency_a_b():
         async with engine3.connect() as verify_conn:
             for _ in range(50):  # Bounded timeout of 5 seconds
                 res = await verify_conn.execute(text(f"""
-                    SELECT 
+                    SELECT
                         a.pid as worker_a_pid,
                         b.pid as worker_b_pid,
                         b.wait_event_type as worker_b_wait_event,
                         pg_blocking_pids(b.pid) as blocking_pids
                     FROM pg_stat_activity a, pg_stat_activity b
-                    WHERE a.application_name = '{app_name_a}' 
+                    WHERE a.application_name = '{app_name_a}'
                       AND b.application_name = '{app_name_b}'
                 """))
-                
+
                 rows = res.fetchall()
                 if rows:
                     row = rows[0]
                     worker_a_pid = row[0]
-                    worker_b_pid = row[1]
                     worker_b_wait = row[2]
                     blocking_pids = row[3] or []
-                    
+
                     if worker_b_wait == 'Lock' and worker_a_pid in blocking_pids:
                         b_is_blocked = True
                         break
-                        
+
                 await asyncio.sleep(0.1)
 
         # Release A so we don't hang teardown
@@ -393,11 +411,12 @@ async def test_cash_concurrency_a_b():
 
         # Gather tasks BEFORE asserting, so we don't skip task teardown and hang engine.dispose()
         res_a, res_b = await asyncio.gather(task_a, task_b)
-        
-        assert b_is_blocked, "Worker B never reached the PostgreSQL lock wait state, or was not blocked by Worker A"
 
-        await session_a.close()
-        await session_b.close()
+        assert b_is_blocked, (
+            "Worker B never reached the PostgreSQL lock wait state, "
+            "or was not blocked by Worker A"
+        )
+
 
         # Verify exact outcomes: One success, one legitimate business rejection (not an exception)
         assert (res_a is True and res_b is False) or (res_a is False and res_b is True)
@@ -413,17 +432,43 @@ async def test_cash_concurrency_a_b():
             assert total_req == Decimal("6000.0"), "Only one transaction should have reserved cash"
 
     finally:
-        # Cleanup schema safely in all paths (success, failure, or exception)
-        await engine1.dispose()
-        await engine2.dispose()
-        await engine3.dispose()
+        # 1. Signal Worker A to stop waiting
+        if a_can_complete is not None:
+            a_can_complete.set()
 
-        admin_engine_cleanup = create_async_engine(
-            pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
-        )
-        async with admin_engine_cleanup.connect() as conn:
-            await conn.execute(text(f"DROP SCHEMA {schema_name} CASCADE"))
-        await admin_engine_cleanup.dispose()
+        # 2. Cancel/await unfinished Worker A/B tasks safely
+        for task in (task_a, task_b):
+            if task is not None and not task.done():
+                task.cancel()
+                from contextlib import suppress
+                with suppress(Exception):
+                    await task
+
+        # 3. Close session_a/session_b
+        if session_a is not None:
+            await session_a.close()
+        if session_b is not None:
+            await session_b.close()
+
+        # 4. Dispose worker/verification engines
+        if engine1 is not None:
+            await engine1.dispose()
+        if engine2 is not None:
+            await engine2.dispose()
+        if engine3 is not None:
+            await engine3.dispose()
+
+        # 5. Drop only the isolated PostgreSQL schema
+        # 6. Dispose cleanup/admin engine
+        try:
+            admin_engine_cleanup = create_async_engine(
+                pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
+            )
+            async with admin_engine_cleanup.connect() as conn:
+                await conn.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+            await admin_engine_cleanup.dispose()
+        except Exception:
+            pass
 
 
 @pytest.mark.asyncio
@@ -856,7 +901,7 @@ async def test_quote_failure_recovery(db_session: AsyncSession, setup_session):
                 timestamp=_now(),
             )
 
-    # 1. Run pipeline - this will do Tx B, then get_quote, which fails, then it will call cancel recovery.
+    # 1. Run pipeline - this will do Tx B, then get_quote, which fails, calling cancel recovery.
     await orchestrator.run_pipeline_for_candle(
         session_id=session_id,
         worker_id=worker_id,

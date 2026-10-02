@@ -187,13 +187,8 @@ async def test_cash_concurrency_a_b():
     default_pg_url = Settings.model_fields["database_url"].default
     pg_url = os.environ.get("POSTGRES_TEST_URL", default_pg_url)
 
-    # Create isolated schema safely without dropping application tables
-    admin_engine = create_async_engine(pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
     schema_name = f"test_k1_{uuid.uuid4().hex}"
-    async with admin_engine.connect() as conn:
-        await conn.execute(text(f"CREATE SCHEMA {schema_name}"))
-    await admin_engine.dispose()
-
+    admin_engine = None
     a_lock_acquired = None
     a_can_complete = None
     engine1 = None
@@ -205,6 +200,13 @@ async def test_cash_concurrency_a_b():
     task_b = None
 
     try:
+        # Create isolated schema safely without dropping application tables
+        admin_engine = create_async_engine(pg_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+        async with admin_engine.connect() as conn:
+            await conn.execute(text(f"CREATE SCHEMA {schema_name}"))
+        await admin_engine.dispose()
+        admin_engine = None
+
         # Use the isolated schema for all test connections
         app_name_a = f"k1_worker_a_{uuid.uuid4().hex}"
         app_name_b = f"k1_worker_b_{uuid.uuid4().hex}"
@@ -440,9 +442,10 @@ async def test_cash_concurrency_a_b():
         for task in (task_a, task_b):
             if task is not None and not task.done():
                 task.cancel()
-                from contextlib import suppress
-                with suppress(Exception):
+                try:
                     await task
+                except asyncio.CancelledError:
+                    pass
 
         # 3. Close session_a/session_b
         if session_a is not None:
@@ -457,6 +460,9 @@ async def test_cash_concurrency_a_b():
             await engine2.dispose()
         if engine3 is not None:
             await engine3.dispose()
+
+        if admin_engine is not None:
+            await admin_engine.dispose()
 
         # 5. Drop only the isolated PostgreSQL schema
         # 6. Dispose cleanup/admin engine

@@ -259,13 +259,10 @@ async def test_cash_concurrency_a_b():
         # Shared events to coordinate A and B deterministically
         a_lock_acquired = asyncio.Event()
         a_can_complete = asyncio.Event()
-        b_lock_attempted = asyncio.Event()
-
         session_a = AsyncSession(engine1)
         session_b = AsyncSession(engine2)
 
         orig_execute_a = session_a.execute
-        orig_execute_b = session_b.execute
         import types
 
         async def wrapped_execute_a(self_obj, *args, **kwargs):
@@ -276,15 +273,7 @@ async def test_cash_concurrency_a_b():
                 await a_can_complete.wait()
             return res
 
-        async def wrapped_execute_b(self_obj, *args, **kwargs):
-            stmt = args[0]
-            if "FOR UPDATE" in str(stmt).upper() and "portfolio_snapshots" in str(stmt).lower():
-                b_lock_attempted.set()
-            res = await orig_execute_b(*args, **kwargs)
-            return res
-
         session_a.execute = types.MethodType(wrapped_execute_a, session_a)
-        session_b.execute = types.MethodType(wrapped_execute_b, session_b)
 
         orchestrator_a = PaperOrchestrator(session_a, MockAdapter())
 
@@ -365,13 +354,29 @@ async def test_cash_concurrency_a_b():
             orchestrator_b.transaction_b_reserve_cash(session_id_b, worker_b_id, sig_b, rd_b)
         )
 
-        # Deterministically wait until B attempts to acquire the exact same lock
-        await b_lock_attempted.wait()
+        # Prove B is ACTUALLY waiting at the database level using pg_stat_activity
+        b_is_blocked = False
+        async with engine3.connect() as verify_conn:
+            for _ in range(50):  # Bounded timeout of 5 seconds
+                res = await verify_conn.execute(text(
+                    "SELECT wait_event_type, query FROM pg_stat_activity WHERE state = 'active'"
+                ))
+                active_queries = res.fetchall()
+                for row in active_queries:
+                    w_type, query_text = row
+                    if w_type == 'Lock':
+                        b_is_blocked = True
+                        break
+                if b_is_blocked:
+                    break
+                await asyncio.sleep(0.1)
 
-        # Release A to complete its transaction
+        # Release A so we don't hang teardown
         a_can_complete.set()
 
         res_a, res_b = await asyncio.gather(task_a, task_b)
+
+        assert b_is_blocked, "Worker B never reached the PostgreSQL lock wait state"
 
         await session_a.close()
         await session_b.close()

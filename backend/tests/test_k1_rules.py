@@ -196,10 +196,15 @@ async def test_cash_concurrency_a_b():
 
     try:
         # Use the isolated schema for all test connections
-        connect_args = {"server_settings": {"search_path": schema_name}}
-        engine1 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
-        engine2 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
-        engine3 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args)
+        app_name_a = f"k1_worker_a_{uuid.uuid4().hex}"
+        app_name_b = f"k1_worker_b_{uuid.uuid4().hex}"
+        connect_args_a = {"server_settings": {"search_path": schema_name, "application_name": app_name_a}}
+        connect_args_b = {"server_settings": {"search_path": schema_name, "application_name": app_name_b}}
+        connect_args_verify = {"server_settings": {"search_path": schema_name, "application_name": f"k1_verify_{uuid.uuid4().hex}"}}
+        
+        engine1 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_a)
+        engine2 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_b)
+        engine3 = create_async_engine(pg_url, poolclass=NullPool, connect_args=connect_args_verify)
 
         async with engine1.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -358,25 +363,38 @@ async def test_cash_concurrency_a_b():
         b_is_blocked = False
         async with engine3.connect() as verify_conn:
             for _ in range(50):  # Bounded timeout of 5 seconds
-                res = await verify_conn.execute(text(
-                    "SELECT wait_event_type, query FROM pg_stat_activity WHERE state = 'active'"
-                ))
-                active_queries = res.fetchall()
-                for row in active_queries:
-                    w_type, query_text = row
-                    if w_type == 'Lock':
+                res = await verify_conn.execute(text(f"""
+                    SELECT 
+                        a.pid as worker_a_pid,
+                        b.pid as worker_b_pid,
+                        b.wait_event_type as worker_b_wait_event,
+                        pg_blocking_pids(b.pid) as blocking_pids
+                    FROM pg_stat_activity a, pg_stat_activity b
+                    WHERE a.application_name = '{app_name_a}' 
+                      AND b.application_name = '{app_name_b}'
+                """))
+                
+                rows = res.fetchall()
+                if rows:
+                    row = rows[0]
+                    worker_a_pid = row[0]
+                    worker_b_pid = row[1]
+                    worker_b_wait = row[2]
+                    blocking_pids = row[3] or []
+                    
+                    if worker_b_wait == 'Lock' and worker_a_pid in blocking_pids:
                         b_is_blocked = True
                         break
-                if b_is_blocked:
-                    break
+                        
                 await asyncio.sleep(0.1)
 
         # Release A so we don't hang teardown
         a_can_complete.set()
 
+        # Gather tasks BEFORE asserting, so we don't skip task teardown and hang engine.dispose()
         res_a, res_b = await asyncio.gather(task_a, task_b)
-
-        assert b_is_blocked, "Worker B never reached the PostgreSQL lock wait state"
+        
+        assert b_is_blocked, "Worker B never reached the PostgreSQL lock wait state, or was not blocked by Worker A"
 
         await session_a.close()
         await session_b.close()
